@@ -378,17 +378,24 @@ class TestStrokeAnalyzer:
         analysis = StrokeAnalysis(
             stroke=stroke,
             ready_position_good=True,
-            ready_issues=[],
             contact_height_status="low",
             wrist_above_shoulder=False,
             wrist_above_head=False,
             contact_height_value=0.05,
             contact_in_front=True,
             contact_front_value=0.1,
+            contact_front_confidence=0.8,
             elbow_leads_wrist=False,
             elbow_lead_time_ms=0,
+            prep_phase_good=True,
+            elbow_prepared=True,
+            non_racket_arm_up=True,
             is_valid_overhead=True,
-            overhead_confidence=0.8
+            overhead_confidence=0.8,
+            camera_angle="front",
+            camera_confidence=0.8,
+            ready_issues=[],
+            prep_issues=[]
         )
         
         mistakes = analyzer.detect_mistakes([analysis])

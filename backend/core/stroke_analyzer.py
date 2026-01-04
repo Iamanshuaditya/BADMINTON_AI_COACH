@@ -2,6 +2,13 @@
 Overhead Stroke Analyzer for Shadow Practice
 Detects and analyzes overhead shadow strokes (clear/smash style) using pose-only data.
 NO racket detection, NO shuttle tracking, NO grip analysis.
+
+V2 Accuracy Upgrades:
+- Angle classifier for camera-aware "in front" checks
+- Composite contact proxy (wrist speed + arm extension + height)
+- Prep phase analysis (elbow up, non-racket arm)
+- Confidence gating and episode clustering
+- Calibration-aware baselines
 """
 
 import math
@@ -10,6 +17,10 @@ from dataclasses import dataclass, field
 import logging
 
 from .feature_computer import FrameFeatures, LANDMARKS
+from .angle_classifier import CameraAngleClassifier, AngleClassification, compute_frontness
+from .contact_detection import EnhancedContactDetector, PrepPhaseAnalyzer, ContactProxyScore, PrepPhaseAnalysis
+from .confidence_gating import VisibilityGate, EpisodeClustering, SmartFixFirstRanker, MistakeEpisode
+from .calibration import BaseStanceCalibrator, CalibrationData
 from config import get_thresholds
 
 logger = logging.getLogger(__name__)
@@ -57,20 +68,31 @@ class StrokeAnalysis:
     wrist_above_head: bool
     contact_height_value: float  # Relative position
     
-    # Contact in front
+    # Contact in front (camera-aware)
     contact_in_front: bool
     contact_front_value: float  # How far in front
+    contact_front_confidence: float  # Confidence based on camera angle
     
     # Arm sequence
     elbow_leads_wrist: bool
     elbow_lead_time_ms: float
     
+    # Prep phase (V2)
+    prep_phase_good: bool
+    elbow_prepared: bool
+    non_racket_arm_up: bool
+    
     # Overall
     is_valid_overhead: bool
     overhead_confidence: float
     
+    # Camera angle info
+    camera_angle: str  # "front", "side", "45deg"
+    camera_confidence: float
+    
     # Optional fields with defaults (must come last)
     ready_issues: List[str] = field(default_factory=list)
+    prep_issues: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -91,6 +113,13 @@ class OverheadStrokeAnalyzer:
     """
     Analyzes overhead shadow strokes from pose data.
     Uses rules-based detection, no ML.
+    
+    V2 Upgrades:
+    - Camera angle classifier for better "in front" checks
+    - Enhanced contact proxy with composite scoring
+    - Prep phase analysis (elbow up, non-racket arm)
+    - Visibility gating for anti-spam
+    - Calibration integration
     """
     
     def __init__(self):
@@ -99,12 +128,25 @@ class OverheadStrokeAnalyzer:
         self._analyses: List[StrokeAnalysis] = []
         self._mistakes: List[StrokeMistake] = []
         self._stroke_count = 0
+        
+        # V2 components
+        self._angle_classifier = CameraAngleClassifier()
+        self._contact_detector = EnhancedContactDetector()
+        self._prep_analyzer = PrepPhaseAnalyzer()
+        self._visibility_gate = VisibilityGate()
+        self._calibrator = BaseStanceCalibrator()
+        
+        # Cached analysis data
+        self._camera_angle: Optional[AngleClassification] = None
+        self._calibration: Optional[CalibrationData] = None
     
     def reset(self):
         self._strokes = []
         self._analyses = []
         self._mistakes = []
         self._stroke_count = 0
+        self._camera_angle = None
+        self._calibration = None
     
     def _get_landmark_position(
         self, 
@@ -355,15 +397,22 @@ class OverheadStrokeAnalyzer:
         frames: List[Dict],
         features: List[FrameFeatures]
     ) -> StrokeAnalysis:
-        """Analyze a single detected stroke"""
+        """Analyze a single detected stroke with V2 accuracy upgrades"""
         cfg = self._thresholds.stroke
         side = stroke.dominant_side
+        
+        # Get camera angle (cached)
+        camera_angle = self._camera_angle or AngleClassification(
+            angle_class="front", confidence=0.5, frontness_axis="x",
+            shoulder_x_ratio=0.15, hip_shoulder_alignment=0.8, 
+            occlusion_score=0.2, is_reliable=False
+        )
         
         # Find contact frame
         contact_frame = self._find_frame_at_time(frames, stroke.contact_proxy_timestamp)
         
-        if not contact_frame or not contact_frame.get("landmarks"):
-            # Can't analyze - return default
+        # Default analysis for failures
+        def default_analysis():
             return StrokeAnalysis(
                 stroke=stroke,
                 ready_position_good=True,
@@ -373,11 +422,20 @@ class OverheadStrokeAnalyzer:
                 contact_height_value=0,
                 contact_in_front=True,
                 contact_front_value=0,
+                contact_front_confidence=0,
                 elbow_leads_wrist=True,
                 elbow_lead_time_ms=0,
+                prep_phase_good=True,
+                elbow_prepared=True,
+                non_racket_arm_up=True,
                 is_valid_overhead=False,
-                overhead_confidence=stroke.overhead_confidence
+                overhead_confidence=stroke.overhead_confidence,
+                camera_angle=camera_angle.angle_class,
+                camera_confidence=camera_angle.confidence
             )
+        
+        if not contact_frame or not contact_frame.get("landmarks"):
+            return default_analysis()
         
         landmarks = contact_frame["landmarks"]
         
@@ -392,22 +450,22 @@ class OverheadStrokeAnalyzer:
         right_shoulder = self._get_landmark_position(landmarks, "right_shoulder")
         
         if not all([wrist, shoulder]):
-            return StrokeAnalysis(
-                stroke=stroke, ready_position_good=True,
-                contact_height_status="unknown", wrist_above_shoulder=False,
-                wrist_above_head=False, contact_height_value=0,
-                contact_in_front=True, contact_front_value=0,
-                elbow_leads_wrist=True, elbow_lead_time_ms=0,
-                is_valid_overhead=False, overhead_confidence=0
-            )
+            return default_analysis()
+        
+        # === V2: VISIBILITY GATING ===
+        required_landmarks = [f"{side}_wrist", f"{side}_elbow", f"{side}_shoulder"]
+        visibility = self._visibility_gate.check_stability(
+            frames,
+            stroke.start_timestamp,
+            stroke.end_timestamp,
+            required_landmarks
+        )
         
         # === CONTACT HEIGHT ANALYSIS ===
-        # In image coordinates, smaller y = higher on screen
         wrist_y = wrist[1]
         shoulder_y = shoulder[1]
         nose_y = nose[1] if nose else shoulder_y - 0.15
         
-        # Relative height (negative = wrist is above)
         height_diff = wrist_y - shoulder_y
         
         wrist_above_shoulder = height_diff < cfg.contact_low_threshold
@@ -420,48 +478,73 @@ class OverheadStrokeAnalyzer:
         else:
             contact_height_status = "good"
         
-        # === CONTACT IN FRONT ANALYSIS ===
-        # Compare wrist x to torso center x
+        # === V2: CAMERA-AWARE CONTACT IN FRONT ===
         if left_shoulder and right_shoulder:
-            torso_center_x = (left_shoulder[0] + right_shoulder[0]) / 2
+            torso_center = ((left_shoulder[0] + right_shoulder[0]) / 2,
+                           (left_shoulder[1] + right_shoulder[1]) / 2)
         else:
-            torso_center_x = shoulder[0]
+            torso_center = (shoulder[0], shoulder[1])
         
-        # For right-handed: wrist should be left of torso (lower x in some views)
-        # This is angle-dependent, so we use a simple heuristic
-        # Check if wrist is in front based on y-position during swing peak
-        contact_front_value = torso_center_x - wrist[0]  # Positive = wrist in front (for right side view)
-        contact_in_front = abs(contact_front_value) < cfg.contact_front_tolerance or contact_front_value > 0
+        # Use camera-aware frontness computation
+        frontness_value, frontness_confidence = compute_frontness(
+            wrist_pos=(wrist[0], wrist[1]),
+            shoulder_pos=(shoulder[0], shoulder[1]),
+            torso_center=torso_center,
+            angle_class=camera_angle
+        )
+        
+        # Apply visibility-adjusted confidence
+        frontness_confidence *= visibility.stability_score if visibility.is_stable else 0.5
+        
+        # Determine contact in front based on camera-aware threshold
+        contact_in_front = frontness_value > -cfg.contact_front_tolerance
+        contact_front_value = frontness_value
+        contact_front_confidence = frontness_confidence
+        
+        # If camera angle is unreliable and frontness is marginal, reduce confidence
+        if not camera_angle.is_reliable and abs(frontness_value) < cfg.contact_front_tolerance * 2:
+            contact_front_confidence *= 0.5
         
         # === ELBOW LEADS WRIST ===
         elbow_lead_time_ms = (stroke.wrist_peak_timestamp - stroke.elbow_peak_timestamp) * 1000
         elbow_leads_wrist = cfg.elbow_lead_min_ms <= elbow_lead_time_ms <= cfg.elbow_lead_max_ms
         
+        # === V2: PREP PHASE ANALYSIS ===
+        prep_analysis = self._prep_analyzer.analyze_prep_phase(
+            frames, stroke.start_timestamp, side
+        )
+        prep_phase_good = prep_analysis.prep_quality in ["good", "fair"]
+        
         # === READY POSITION CHECK ===
         ready_issues = []
         ready_position_good = True
         
-        # Find frames before stroke start
         ready_start_t = stroke.start_timestamp - cfg.ready_window_before_sec
-        ready_frames = [f for f in frames 
-                       if ready_start_t <= f.get("timestamp", 0) <= stroke.start_timestamp]
+        ready_features = [f for f in features 
+                        if ready_start_t <= f.timestamp <= stroke.start_timestamp]
         
-        if ready_frames and features:
-            # Check stance width in ready position
-            ready_features = [f for f in features 
-                            if ready_start_t <= f.timestamp <= stroke.start_timestamp]
+        if ready_features:
+            avg_stance = sum(f.stance_width_ratio for f in ready_features) / len(ready_features)
             
-            if ready_features:
-                avg_stance = sum(f.stance_width_ratio for f in ready_features) / len(ready_features)
+            # Use calibration baseline if available
+            if self._calibration and self._calibration.is_valid:
+                stance_status, deviation = self._calibrator.check_stance_against_baseline(
+                    avg_stance, self._calibration
+                )
+                if stance_status == "narrow":
+                    ready_issues.append("narrow_stance")
+                    ready_position_good = False
+            else:
+                # Fallback to fixed threshold
                 if avg_stance < cfg.ready_stance_width_min:
                     ready_issues.append("narrow_stance")
                     ready_position_good = False
-                
-                # Check knee bend
-                avg_knee = sum(min(f.left_knee_angle, f.right_knee_angle) for f in ready_features) / len(ready_features)
-                if avg_knee > cfg.ready_knee_bend_min:
-                    ready_issues.append("knees_not_bent")
-                    ready_position_good = False
+            
+            # Check knee bend
+            avg_knee = sum(min(f.left_knee_angle, f.right_knee_angle) for f in ready_features) / len(ready_features)
+            if avg_knee > cfg.ready_knee_bend_min:
+                ready_issues.append("knees_not_bent")
+                ready_position_good = False
         
         # === OVERHEAD VALIDITY ===
         is_valid_overhead = stroke.overhead_confidence >= cfg.overhead_confidence_min
@@ -469,17 +552,24 @@ class OverheadStrokeAnalyzer:
         return StrokeAnalysis(
             stroke=stroke,
             ready_position_good=ready_position_good,
-            ready_issues=ready_issues,
             contact_height_status=contact_height_status,
             wrist_above_shoulder=wrist_above_shoulder,
             wrist_above_head=wrist_above_head,
             contact_height_value=height_diff,
             contact_in_front=contact_in_front,
             contact_front_value=contact_front_value,
+            contact_front_confidence=contact_front_confidence,
             elbow_leads_wrist=elbow_leads_wrist,
             elbow_lead_time_ms=elbow_lead_time_ms,
+            prep_phase_good=prep_phase_good,
+            elbow_prepared=prep_analysis.elbow_above_shoulder,
+            non_racket_arm_up=prep_analysis.non_racket_arm_up,
             is_valid_overhead=is_valid_overhead,
-            overhead_confidence=stroke.overhead_confidence
+            overhead_confidence=stroke.overhead_confidence,
+            camera_angle=camera_angle.angle_class,
+            camera_confidence=camera_angle.confidence,
+            ready_issues=ready_issues,
+            prep_issues=prep_analysis.issues
         )
     
     def detect_mistakes(
@@ -534,18 +624,19 @@ class OverheadStrokeAnalyzer:
                     metadata={"height_diff": analysis.contact_height_value}
                 ))
             
-            # Contact not in front
-            if not analysis.contact_in_front:
+            # Contact not in front (V2: camera-aware confidence)
+            if not analysis.contact_in_front and analysis.contact_front_confidence > 0.4:
                 mistakes.append(StrokeMistake(
                     mistake_type="contact_not_in_front",
                     timestamp=stroke.contact_proxy_timestamp,
                     duration=0.1,
                     severity=0.7,
-                    confidence=analysis.overhead_confidence * 0.8,  # Lower confidence for this check
+                    confidence=analysis.contact_front_confidence,  # V2: camera-aware
                     evidence_timestamps=[stroke.contact_proxy_timestamp],
                     cue="Contact in front",
                     description="Contact point appears to be behind your body. Move contact point forward.",
-                    metadata={"front_value": analysis.contact_front_value}
+                    metadata={"front_value": analysis.contact_front_value, 
+                             "camera_angle": analysis.camera_angle}
                 ))
             
             # Elbow not leading
@@ -589,6 +680,34 @@ class OverheadStrokeAnalyzer:
                             description="Knees not bent enough before stroke. Lower your stance.",
                             metadata={"issue": issue}
                         ))
+            
+            # V2: Prep phase issues
+            if not analysis.prep_phase_good:
+                for issue in analysis.prep_issues:
+                    if issue == "elbow_not_up":
+                        mistakes.append(StrokeMistake(
+                            mistake_type="elbow_not_prepared",
+                            timestamp=stroke.start_timestamp - 0.3,
+                            duration=0.3,
+                            severity=0.6,
+                            confidence=analysis.overhead_confidence,
+                            evidence_timestamps=[stroke.start_timestamp - 0.3],
+                            cue="Elbow up",
+                            description="Racket arm elbow should be raised before swing. Prepare with elbow above shoulder.",
+                            metadata={"issue": issue}
+                        ))
+                    elif issue == "non_racket_arm_down":
+                        mistakes.append(StrokeMistake(
+                            mistake_type="non_racket_arm_not_used",
+                            timestamp=stroke.start_timestamp - 0.3,
+                            duration=0.3,
+                            severity=0.4,
+                            confidence=analysis.overhead_confidence * 0.8,
+                            evidence_timestamps=[stroke.start_timestamp - 0.3],
+                            cue="Use non-racket arm",
+                            description="Non-racket arm should be raised for balance and timing.",
+                            metadata={"issue": issue}
+                        ))
         
         self._mistakes = mistakes
         return mistakes
@@ -601,6 +720,13 @@ class OverheadStrokeAnalyzer:
         """
         Full analysis pipeline for overhead strokes.
         
+        V2 Flow:
+        1. Calibrate from initial frames
+        2. Classify camera angle
+        3. Detect strokes
+        4. Analyze each stroke with V2 checks
+        5. Detect mistakes with prep phase
+        
         Args:
             frames: Raw frame data with landmarks
             features: Computed frame features
@@ -609,6 +735,21 @@ class OverheadStrokeAnalyzer:
             (strokes, analyses, mistakes)
         """
         self.reset()
+        
+        if not frames:
+            logger.info("No frames to analyze")
+            return [], [], []
+        
+        # V2: Calibrate from initial frames
+        self._calibration = self._calibrator.calibrate(frames)
+        if self._calibration.is_valid:
+            logger.info(f"Calibration complete: stance_ratio={self._calibration.baseline_stance_ratio:.2f}, conf={self._calibration.calibration_confidence:.2f}")
+        else:
+            logger.warning("Calibration incomplete or invalid")
+        
+        # V2: Classify camera angle
+        self._camera_angle = self._angle_classifier.classify_video(frames)
+        logger.info(f"Camera angle: {self._camera_angle.angle_class} (conf={self._camera_angle.confidence:.2f})")
         
         # Detect strokes
         strokes = self.detect_strokes(frames)
@@ -625,12 +766,20 @@ class OverheadStrokeAnalyzer:
         
         self._analyses = analyses
         
-        # Detect mistakes
+        # Detect mistakes (including prep phase issues)
         mistakes = self.detect_mistakes(analyses)
         
         logger.info(f"Detected {len(strokes)} strokes, {len(mistakes)} issues")
         
         return strokes, analyses, mistakes
+    
+    def get_camera_angle(self) -> Optional[AngleClassification]:
+        """Get detected camera angle"""
+        return self._camera_angle
+    
+    def get_calibration(self) -> Optional[CalibrationData]:
+        """Get calibration data"""
+        return self._calibration
     
     def get_strokes(self) -> List[StrokeWindow]:
         return self._strokes
