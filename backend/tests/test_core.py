@@ -253,5 +253,175 @@ class TestMistakeDetector:
         assert len(narrow) >= 1, "Should detect narrow stance"
 
 
+class TestStrokeAnalyzer:
+    """Tests for overhead stroke analysis"""
+    
+    def test_overhead_confidence_calculation(self):
+        """Overhead confidence should be high when wrist is above shoulder"""
+        from core.stroke_analyzer import OverheadStrokeAnalyzer
+        from core.feature_computer import LANDMARKS
+        
+        analyzer = OverheadStrokeAnalyzer()
+        
+        # Create mock landmarks with wrist above shoulder (good overhead position)
+        landmarks = [{"x": 0, "y": 0, "visibility": 0.9} for _ in range(33)]
+        
+        # Right arm in overhead position
+        landmarks[LANDMARKS["right_shoulder"]] = {"x": 0.6, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["right_elbow"]] = {"x": 0.65, "y": 0.25, "visibility": 0.9}
+        landmarks[LANDMARKS["right_wrist"]] = {"x": 0.55, "y": 0.15, "visibility": 0.9}  # Above head
+        
+        # Left arm (non-dominant)
+        landmarks[LANDMARKS["left_shoulder"]] = {"x": 0.4, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["left_elbow"]] = {"x": 0.35, "y": 0.45, "visibility": 0.9}
+        landmarks[LANDMARKS["left_wrist"]] = {"x": 0.3, "y": 0.5, "visibility": 0.9}
+        
+        frames = [{"landmarks": landmarks, "timestamp": 0.5}]
+        
+        conf = analyzer._compute_overhead_confidence(
+            frames, start_t=0.4, contact_t=0.5, end_t=0.6, side="right"
+        )
+        
+        # Wrist is above shoulder, elbow elevated, arm extended -> high confidence
+        assert conf >= 0.6, f"Should have high overhead confidence, got {conf}"
+    
+    def test_contact_too_low_detection(self):
+        """Should detect contact point too low (wrist at/below shoulder)"""
+        from core.stroke_analyzer import OverheadStrokeAnalyzer, StrokeWindow, StrokeAnalysis
+        from core.feature_computer import LANDMARKS
+        
+        analyzer = OverheadStrokeAnalyzer()
+        
+        # Create mock stroke with wrist AT shoulder level (too low)
+        landmarks = [{"x": 0, "y": 0, "visibility": 0.9} for _ in range(33)]
+        
+        # Right arm with wrist at shoulder level (LOW contact)
+        landmarks[LANDMARKS["right_shoulder"]] = {"x": 0.6, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["right_elbow"]] = {"x": 0.65, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["right_wrist"]] = {"x": 0.7, "y": 0.35, "visibility": 0.9}  # Same level as shoulder!
+        landmarks[LANDMARKS["left_shoulder"]] = {"x": 0.4, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["nose"]] = {"x": 0.5, "y": 0.2, "visibility": 0.9}
+        
+        frames = [{"landmarks": landmarks, "timestamp": 0.5}]
+        
+        stroke = StrokeWindow(
+            stroke_id=1,
+            start_timestamp=0.4,
+            contact_proxy_timestamp=0.5,
+            end_timestamp=0.6,
+            duration=0.2,
+            wrist_peak_speed=0.1,
+            elbow_peak_speed=0.08,
+            wrist_peak_timestamp=0.5,
+            elbow_peak_timestamp=0.45,
+            dominant_side="right",
+            overhead_confidence=0.8,
+            visibility_score=0.9,
+            start_frame=0,
+            contact_frame=0,
+            end_frame=0
+        )
+        
+        analysis = analyzer.analyze_stroke(stroke, frames, [])
+        
+        # Wrist at shoulder level = low contact
+        assert analysis.contact_height_status == "low", f"Expected 'low', got {analysis.contact_height_status}"
+        assert not analysis.wrist_above_shoulder, "Wrist should NOT be above shoulder"
+    
+    def test_elbow_leads_wrist_detection(self):
+        """Should detect if elbow leads wrist in swing"""
+        from core.stroke_analyzer import OverheadStrokeAnalyzer, StrokeWindow
+        from core.feature_computer import LANDMARKS
+        
+        analyzer = OverheadStrokeAnalyzer()
+        
+        # Create mock landmarks
+        landmarks = [{"x": 0, "y": 0, "visibility": 0.9} for _ in range(33)]
+        landmarks[LANDMARKS["right_shoulder"]] = {"x": 0.6, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["right_elbow"]] = {"x": 0.65, "y": 0.25, "visibility": 0.9}
+        landmarks[LANDMARKS["right_wrist"]] = {"x": 0.55, "y": 0.15, "visibility": 0.9}
+        landmarks[LANDMARKS["left_shoulder"]] = {"x": 0.4, "y": 0.35, "visibility": 0.9}
+        landmarks[LANDMARKS["nose"]] = {"x": 0.5, "y": 0.2, "visibility": 0.9}
+        
+        frames = [{"landmarks": landmarks, "timestamp": 0.5}]
+        
+        # Good elbow lead: elbow peak at 0.45, wrist peak at 0.5 (50ms lead)
+        stroke_good = StrokeWindow(
+            stroke_id=1, start_timestamp=0.4, contact_proxy_timestamp=0.5,
+            end_timestamp=0.6, duration=0.2,
+            wrist_peak_speed=0.1, elbow_peak_speed=0.08,
+            wrist_peak_timestamp=0.5, elbow_peak_timestamp=0.45,  # 50ms lead
+            dominant_side="right", overhead_confidence=0.8,
+            visibility_score=0.9, start_frame=0, contact_frame=0, end_frame=0
+        )
+        
+        analysis = analyzer.analyze_stroke(stroke_good, frames, [])
+        assert analysis.elbow_leads_wrist, "Elbow should lead wrist with 50ms lead"
+        assert 30 <= analysis.elbow_lead_time_ms <= 200
+    
+    def test_stroke_mistake_generation(self):
+        """Should generate appropriate mistakes from stroke analysis"""
+        from core.stroke_analyzer import OverheadStrokeAnalyzer, StrokeWindow, StrokeAnalysis
+        
+        analyzer = OverheadStrokeAnalyzer()
+        
+        # Create analysis with low contact
+        stroke = StrokeWindow(
+            stroke_id=1, start_timestamp=0.4, contact_proxy_timestamp=0.5,
+            end_timestamp=0.6, duration=0.2,
+            wrist_peak_speed=0.1, elbow_peak_speed=0.08,
+            wrist_peak_timestamp=0.5, elbow_peak_timestamp=0.5,
+            dominant_side="right", overhead_confidence=0.8,
+            visibility_score=0.9, start_frame=0, contact_frame=0, end_frame=0
+        )
+        
+        analysis = StrokeAnalysis(
+            stroke=stroke,
+            ready_position_good=True,
+            ready_issues=[],
+            contact_height_status="low",
+            wrist_above_shoulder=False,
+            wrist_above_head=False,
+            contact_height_value=0.05,
+            contact_in_front=True,
+            contact_front_value=0.1,
+            elbow_leads_wrist=False,
+            elbow_lead_time_ms=0,
+            is_valid_overhead=True,
+            overhead_confidence=0.8
+        )
+        
+        mistakes = analyzer.detect_mistakes([analysis])
+        
+        # Should have contact too low mistake
+        low_contact = [m for m in mistakes if m.mistake_type == "overhead_contact_too_low"]
+        assert len(low_contact) >= 1, "Should detect contact too low"
+        
+        # Should have elbow not leading
+        elbow_issues = [m for m in mistakes if m.mistake_type == "elbow_not_leading"]
+        assert len(elbow_issues) >= 1, "Should detect elbow not leading"
+
+
+class TestDrillTypeDetection:
+    """Test drill type detection helpers"""
+    
+    def test_stroke_drill_detection(self):
+        """is_stroke_drill should recognize overhead drills"""
+        from core.pipeline import is_stroke_drill, is_footwork_drill
+        
+        assert is_stroke_drill("overhead-shadow") == True
+        assert is_stroke_drill("overhead-clear") == True
+        assert is_stroke_drill("smash-shadow") == True
+        assert is_stroke_drill("6-corner-shadow") == False
+        
+    def test_footwork_drill_detection(self):
+        """is_footwork_drill should recognize footwork drills"""
+        from core.pipeline import is_stroke_drill, is_footwork_drill
+        
+        assert is_footwork_drill("6-corner-shadow") == True
+        assert is_footwork_drill("side-to-side") == True
+        assert is_footwork_drill("footwork") == True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

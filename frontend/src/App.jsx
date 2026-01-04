@@ -5,9 +5,14 @@ const API_BASE = ''
 
 const DRILL_TYPES = [
   { value: 'unknown', label: 'Select drill type...' },
-  { value: '6-corner-shadow', label: '6-Corner Shadow Footwork' },
-  { value: 'side-to-side', label: 'Side-to-Side Defensive' },
-  { value: 'front-back', label: 'Front-Back Movement' },
+  // Footwork drills
+  { value: '6-corner-shadow', label: '🦶 6-Corner Shadow Footwork' },
+  { value: 'side-to-side', label: '🦶 Side-to-Side Defensive' },
+  { value: 'front-back', label: '🦶 Front-Back Movement' },
+  // Stroke drills
+  { value: 'overhead-shadow', label: '🏸 Overhead Shadow (Clear/Smash)' },
+  { value: 'overhead-clear', label: '🏸 Clear Shadow Practice' },
+  { value: 'overhead-smash', label: '🏸 Smash Shadow Practice' },
 ]
 
 function App() {

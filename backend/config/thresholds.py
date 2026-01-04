@@ -121,6 +121,67 @@ class SmoothingConfig:
 
 
 @dataclass
+class StrokeConfig:
+    """Overhead stroke detection thresholds (for shadow practice)"""
+    
+    # Wrist speed thresholds (normalized velocity)
+    wrist_speed_start_threshold: float = 0.04  # Swing initiation
+    wrist_speed_peak_threshold: float = 0.08   # Minimum for valid stroke
+    wrist_speed_end_threshold: float = 0.02    # Swing end
+    
+    # Stroke window timing
+    min_stroke_duration_sec: float = 0.15
+    max_stroke_duration_sec: float = 0.8
+    ready_window_before_sec: float = 0.5  # Check ready position this long before swing
+    
+    # Contact height rules (relative positions)
+    # Wrist should be above shoulder for overhead
+    contact_above_shoulder_required: bool = True
+    # Ideal: wrist above nose/eyes for full extension
+    contact_above_head_ideal: bool = True
+    # Height bands (wrist_y relative to shoulder_y, normalized)
+    contact_low_threshold: float = 0.0   # At or below shoulder = too low
+    contact_medium_threshold: float = -0.1  # Between shoulder and head
+    contact_high_threshold: float = -0.2   # Above head level (negative = higher in image coords)
+    
+    # Contact in front of body
+    # Wrist should lead torso center in swing direction
+    contact_front_tolerance: float = 0.03  # How much wrist should be in front
+    
+    # Elbow leads wrist timing
+    elbow_lead_min_ms: int = 30   # Elbow should peak this many ms before wrist
+    elbow_lead_max_ms: int = 200  # But not more than this
+    
+    # Overhead intent validation
+    overhead_confidence_min: float = 0.6  # Min confidence to give overhead corrections
+    # Wrist must be above shoulder for overhead intent
+    wrist_above_shoulder_required: bool = True
+    # Elbow elevation threshold (elbow_y < shoulder_y by this much)
+    elbow_elevation_threshold: float = 0.05
+    
+    # Ready position checks
+    ready_stance_width_min: float = 0.6  # Minimum stance width ratio
+    ready_knee_bend_min: float = 155.0   # Max knee angle (less = more bent)
+    ready_posture_check: bool = True
+    
+    # Visibility requirements for stroke analysis
+    stroke_visibility_min: float = 0.5
+    # Critical landmarks for overhead stroke
+    stroke_critical_landmarks: tuple = (
+        "left_wrist", "right_wrist",
+        "left_elbow", "right_elbow", 
+        "left_shoulder", "right_shoulder",
+        "nose"
+    )
+    
+    # Cooldown between stroke detections (seconds)
+    stroke_cooldown_sec: float = 0.5
+    
+    # Rolling window for velocity computation (frames)
+    velocity_window_frames: int = 5
+
+
+@dataclass
 class ThresholdConfig:
     """Master threshold configuration"""
     split_step: SplitStepConfig = field(default_factory=SplitStepConfig)
@@ -132,6 +193,7 @@ class ThresholdConfig:
     fsm: FSMConfig = field(default_factory=FSMConfig)
     visibility: VisibilityConfig = field(default_factory=VisibilityConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
+    stroke: StrokeConfig = field(default_factory=StrokeConfig)
 
 
 # Global config instance - modify this to tune thresholds
@@ -141,3 +203,4 @@ THRESHOLDS = ThresholdConfig()
 def get_thresholds() -> ThresholdConfig:
     """Get the current threshold configuration"""
     return THRESHOLDS
+

@@ -1,12 +1,13 @@
 """
 Coach Report Generator
 Generates structured JSON coach reports from analysis results.
+Supports both footwork and overhead stroke analysis.
 """
 
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from .feature_computer import FrameFeatures
 from .event_fsm import DetectedEvent
@@ -48,6 +49,9 @@ class CoachReport:
     
     # Confidence notes
     confidence_notes: List[str]
+    
+    # Stroke analysis data (optional, for overhead drills)
+    stroke_analysis: Optional[Dict] = None
 
 
 def generate_report(
@@ -57,7 +61,8 @@ def generate_report(
     features: List[FrameFeatures],
     events: List[DetectedEvent],
     mistakes: List[DetectedMistake],
-    drill_type: str = "unknown"
+    drill_type: str = "unknown",
+    stroke_data: Optional[Dict] = None
 ) -> CoachReport:
     """Generate a coach report from analysis results."""
     
@@ -97,10 +102,26 @@ def generate_report(
     
     # Confidence notes
     conf_notes = []
-    if low_conf_frames > len(features) * 0.1:
+    if features and low_conf_frames > len(features) * 0.1:
         conf_notes.append(f"Low visibility in {low_conf_frames} frames ({low_conf_frames/len(features)*100:.0f}%)")
     if avg_confidence < 0.6:
         conf_notes.append("Overall pose confidence is low - consider better camera angle")
+    
+    # Build metrics summary
+    metrics = {
+        "avg_stance_width_ratio": round(avg_stance, 2),
+        "avg_pose_confidence": round(avg_confidence, 2),
+        "total_events": len(events),
+        "total_mistakes": len(mistakes),
+        "split_steps_detected": sum(1 for e in events if e.event_type == "split_step"),
+        "lunges_detected": sum(1 for e in events if e.event_type == "lunge"),
+        "direction_changes": sum(1 for e in events if e.event_type == "direction_change")
+    }
+    
+    # Add stroke metrics if available
+    if stroke_data:
+        metrics["strokes_detected"] = stroke_data.get("strokes_detected", 0)
+        metrics["stroke_issues"] = sum(1 for m in mistakes if "overhead" in m.mistake_type or "contact" in m.mistake_type or "elbow" in m.mistake_type)
     
     return CoachReport(
         session_id=session_id,
@@ -118,16 +139,9 @@ def generate_report(
         mistakes=mistakes_list,
         top_mistakes=get_top_mistakes(mistakes, 3),
         fix_first_plan=get_fix_first_plan(mistakes),
-        metrics_summary={
-            "avg_stance_width_ratio": round(avg_stance, 2),
-            "avg_pose_confidence": round(avg_confidence, 2),
-            "total_events": len(events),
-            "total_mistakes": len(mistakes),
-            "split_steps_detected": sum(1 for e in events if e.event_type == "split_step"),
-            "lunges_detected": sum(1 for e in events if e.event_type == "lunge"),
-            "direction_changes": sum(1 for e in events if e.event_type == "direction_change")
-        },
-        confidence_notes=conf_notes
+        metrics_summary=metrics,
+        confidence_notes=conf_notes,
+        stroke_analysis=stroke_data
     )
 
 
@@ -153,6 +167,37 @@ def create_evidence_chunks(report: CoachReport) -> List[str]:
                 f"Cue: '{m['cue']}'. Evidence at: {m['evidence']}")
         chunks.append(chunk)
     
+    # Stroke analysis chunks (if present)
+    if report.stroke_analysis:
+        strokes = report.stroke_analysis.get("strokes", [])
+        analyses = report.stroke_analysis.get("analyses", [])
+        
+        for stroke in strokes:
+            chunk = (f"{stroke['contact_timestamp']}s: OVERHEAD STROKE detected. "
+                    f"Duration: {stroke['duration']}s. "
+                    f"Overhead confidence: {stroke['overhead_confidence']}. "
+                    f"Dominant arm: {stroke['dominant_side']}")
+            chunks.append(chunk)
+        
+        for analysis in analyses:
+            status_parts = []
+            if not analysis["wrist_above_shoulder"]:
+                status_parts.append("contact below shoulder")
+            if not analysis["contact_in_front"]:
+                status_parts.append("contact behind body")
+            if not analysis["elbow_leads_wrist"]:
+                status_parts.append("elbow not leading")
+            if not analysis["ready_position_good"]:
+                status_parts.append("ready position issues")
+            
+            if status_parts:
+                chunk = (f"Stroke #{analysis['stroke_id']}: Issues detected - {', '.join(status_parts)}. "
+                        f"Contact height: {analysis['contact_height_status']}.")
+                chunks.append(chunk)
+            else:
+                chunk = f"Stroke #{analysis['stroke_id']}: Good form. Contact height: {analysis['contact_height_status']}."
+                chunks.append(chunk)
+    
     # Summary chunk
     if report.fix_first_plan:
         plan = report.fix_first_plan
@@ -164,11 +209,14 @@ def create_evidence_chunks(report: CoachReport) -> List[str]:
     
     # Metrics chunk
     m = report.metrics_summary
-    chunks.append(
-        f"SESSION SUMMARY: {report.video_duration:.1f}s video. "
-        f"{m['total_events']} events detected. {m['total_mistakes']} issues found. "
-        f"Avg stance ratio: {m['avg_stance_width_ratio']}. "
-        f"Pose confidence: {m['avg_pose_confidence']}"
-    )
+    summary = f"SESSION SUMMARY: {report.video_duration:.1f}s video. "
+    
+    if "strokes_detected" in m and m["strokes_detected"] > 0:
+        summary += f"{m['strokes_detected']} strokes detected. "
+    if m["total_events"] > 0:
+        summary += f"{m['total_events']} footwork events. "
+    
+    summary += f"{m['total_mistakes']} issues found. Pose confidence: {m['avg_pose_confidence']}"
+    chunks.append(summary)
     
     return chunks
