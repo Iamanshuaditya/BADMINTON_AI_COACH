@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo, useState } from 'react';
 import './ChatInterface.css';
 
 export default function ChatInterface({
@@ -16,22 +16,33 @@ export default function ChatInterface({
     const inputRef = useRef(null);
     const fileInputRef = useRef(null);
 
-    // Create video URL safely
+    // Video URL
     const videoUrl = useMemo(() => {
         return file ? URL.createObjectURL(file) : null;
     }, [file]);
 
-    // Clean up URL on unmount
     useEffect(() => {
         return () => {
             if (videoUrl) URL.revokeObjectURL(videoUrl);
         };
     }, [videoUrl]);
 
-    // Auto-scroll to bottom
+    // Auto-scroll
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, status, progress]);
+    }, [messages, status, progress, chatLoading]);
+
+    // Input placeholder logic
+    const getPlaceholder = () => {
+        if (status !== 'complete') return "Waiting for analysis...";
+        // Check if last message was the kickoff or an answer
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg?.type === 'kickoff') {
+            const issue = lastMsg.data?.fixFirst?.primary_issue?.replace(/_/g, ' ') || 'it';
+            return `Ask how to fix ${issue}...`;
+        }
+        return "Ask about your footwork...";
+    };
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -53,18 +64,19 @@ export default function ChatInterface({
     return (
         <div className="chat-container">
             <div className="chat-messages-area">
-                {/* Empty State / Upload */}
+                {/* Upload Hero */}
                 {status === 'idle' && messages.length === 0 && (
                     <div className="upload-hero fade-in">
-                        <h2>Drop your practice video</h2>
-                        <p>Best results: fixed tripod, full body visible, 30–180s.</p>
+                        <h2 className="hero-title">ShuttleSense Coach</h2>
+                        <p className="hero-subtitle">Upload a practice video to get a professional break-down.</p>
 
                         <div
                             className="drop-zone"
                             onClick={() => fileInputRef.current?.click()}
                         >
-                            <span className="drop-icon">☁️</span>
-                            <span>Upload Video</span>
+                            <span className="drop-icon">⚡</span>
+                            <span className="drop-text">Drop video here</span>
+                            <span className="drop-hint">Fixed tripod • Full body • 30–120s</span>
                             <input
                                 ref={fileInputRef}
                                 type="file"
@@ -74,42 +86,40 @@ export default function ChatInterface({
                             />
                         </div>
 
-                        <div className="drill-selector">
+                        <div className="drill-selector-wrapper">
                             <select
                                 value={drillType}
                                 onChange={(e) => setDrillType(e.target.value)}
                                 className="drill-dropdown"
                             >
                                 <option value="unknown">Select drill type...</option>
-                                <option value="6-corner-shadow">🦶 6-Corner Shadow Footwork</option>
-                                <option value="side-to-side">🦶 Side-to-Side Defensive</option>
-                                <option value="front-back">🦶 Front-Back Movement</option>
-                                <option value="overhead-shadow">🏸 Overhead Shadow (Clear/Smash)</option>
-                                <option value="overhead-clear">🏸 Clear Shadow Practice</option>
-                                <option value="overhead-smash">🏸 Smash Shadow Practice</option>
+                                <option value="6-corner-shadow">6-Corner Shadow Footwork</option>
+                                <option value="side-to-side">Side-to-Side Defensive</option>
+                                <option value="front-back">Front-Back Movement</option>
+                                <option value="overhead-shadow">Overhead Shadow (Clear/Smash)</option>
                             </select>
                         </div>
                     </div>
                 )}
 
-                {/* Progress State */}
+                {/* Progress */}
                 {(status === 'uploading' || status === 'analyzing') && (
-                    <div className="system-message progress-message fade-in">
-                        <div className="loader-spinner"></div>
-                        <div className="progress-content">
-                            <span className="progress-stage">{progress.stage}</span>
-                            {status === 'uploading' && (
-                                <div className="progress-track">
-                                    <div className="progress-fill" style={{ width: `${progress.percent}%` }}></div>
-                                </div>
-                            )}
+                    <div className="system-note fade-in">
+                        <div className="system-note-content">
+                            <div className="loader-pulse"></div>
+                            <span>{progress.stage}</span>
                         </div>
+                        {status === 'uploading' && (
+                            <div className="minimal-progress">
+                                <div className="minimal-fill" style={{ width: `${progress.percent}%` }}></div>
+                            </div>
+                        )}
                     </div>
                 )}
 
-                {/* Message Stream */}
+                {/* Messages */}
                 {messages.map((msg, idx) => (
-                    <MessageItem key={idx} message={msg} />
+                    <MessageItem key={idx} message={msg} onAction={(action) => onSendMessage(action)} videoUrl={videoUrl} />
                 ))}
 
                 {chatLoading && (
@@ -123,23 +133,22 @@ export default function ChatInterface({
                 <div ref={bottomRef} />
             </div>
 
-            {/* Mini Player */}
-            {status === 'complete' && videoUrl && (
-                <div className="mini-player-strip fade-in">
-                    <video src={videoUrl} controls className="mini-video" />
-                    <div className="player-hint">Reviewing your session</div>
-                </div>
-            )}
-
             {/* Input Area */}
             <div className="chat-input-area">
+                {/* Mini Player anchored here if active */}
+                {status === 'complete' && videoUrl && (
+                    <div className="mini-player-anchor">
+                        {/* Logic to show player could be here, but for now we keep it optional/inline */}
+                    </div>
+                )}
+
                 <div className="input-wrapper">
                     <button className="attach-btn" disabled={status !== 'complete' && status !== 'idle'}>
-                        📎
+                        +
                     </button>
                     <textarea
                         ref={inputRef}
-                        placeholder={status === 'complete' ? "Ask about your footwork..." : "Waiting for analysis..."}
+                        placeholder={getPlaceholder()}
                         rows={1}
                         onKeyDown={handleKeyDown}
                         disabled={status !== 'complete' && status !== 'idle'}
@@ -155,7 +164,7 @@ export default function ChatInterface({
                         }}
                         disabled={status !== 'complete' && status !== 'idle'}
                     >
-                        ➤
+                        →
                     </button>
                 </div>
             </div>
@@ -163,55 +172,118 @@ export default function ChatInterface({
     );
 }
 
-function MessageItem({ message }) {
+function MessageItem({ message, onAction, videoUrl }) {
     const isUser = message.role === 'user';
 
     if (message.type === 'kickoff') {
-        return <KickoffCard data={message.data} />;
+        return <KickoffCard data={message.data} onAction={onAction} />;
     }
 
-    return (
-        <div className={`message ${isUser ? 'user' : 'assistant'} fade-in`}>
-            <div className="message-content">
-                {message.content}
+    // User Message
+    if (isUser) {
+        return (
+            <div className="message user fade-in">
+                <div className="message-content">{message.content}</div>
             </div>
-            {message.citations && message.citations.length > 0 && (
-                <div className="evidence-block">
-                    <span className="evidence-label">Evidence:</span>
-                    {message.citations.map((cit, i) => (
-                        <span key={i} className="evidence-pill">{cit}</span>
-                    ))}
+        );
+    }
+
+    // Coach Message (Standard)
+    return (
+        <div className="message assistant fade-in">
+            <div className="coach-avatar">C</div>
+            <div className="message-body">
+                <div className="message-content">
+                    {formatCoachText(message.content)}
                 </div>
-            )}
+
+                {/* Evidence Block (Collapsible logic could be added here, for now it's "On Demand" via the button usually, but if provided we show it elegantly) */}
+                {message.citations && message.citations.length > 0 && (
+                    <EvidenceBlock citations={message.citations} />
+                )}
+            </div>
         </div>
     );
 }
 
-function KickoffCard({ data }) {
-    const { summary, fixFirst } = data;
+function KickoffCard({ data, onAction }) {
+    const { fixFirst } = data;
+    if (!fixFirst) return null;
+
+    const issueName = fixFirst.primary_issue?.replace(/_/g, ' ');
+
     return (
         <div className="kickoff-container fade-in">
-            <div className="summary-chips">
-                <div className="chip">⏱ {data.duration?.toFixed(1)}s</div>
-                <div className="chip">⚡ {data.eventsCount} Events</div>
-                <div className="chip">⚠️ {data.mistakesCount} Issues</div>
-            </div>
+            <div className="verdict-card">
+                <div className="verdict-header">
+                    <span className="verdict-label">FIX FIRST</span>
+                    <h1 className="verdict-title">{issueName}</h1>
+                </div>
 
-            {fixFirst && (
-                <div className="fix-first-card">
-                    <div className="card-header">
-                        <span className="badge-warning">FIX FIRST</span>
-                        <h4>{fixFirst.primary_issue?.replace(/_/g, ' ')}</h4>
-                    </div>
-                    <p className="fix-reason">
-                        {fixFirst.cue}
+                <div className="verdict-body">
+                    <p className="verdict-text">
+                        This is the main issue holding your recovery back.
+                        Detected repeatedly across the session.
                     </p>
-                    <div className="fix-stats">
-                        <span>{fixFirst.occurrences} occurrences</span>
-                        <span>Focus: {fixFirst.focus_drill}</span>
+
+                    <div className="verdict-cue-box">
+                        <span className="cue-label">PRIMARY CUE</span>
+                        <p className="cue-text">"{fixFirst.cue}"</p>
+                    </div>
+
+                    <div className="verdict-actions">
+                        <button
+                            className="action-btn primary"
+                            // In a real app this would trigger the evidence view state
+                            onClick={() => onAction(`Show me evidence of ${issueName}`)}
+                        >
+                            Show evidence
+                        </button>
+                        <button
+                            className="action-btn secondary"
+                            onClick={() => onAction(`How do I fix ${issueName}?`)}
+                        >
+                            Give me the drill
+                        </button>
                     </div>
                 </div>
-            )}
+            </div>
         </div>
     );
+}
+
+function EvidenceBlock({ citations }) {
+    const [expanded, setExpanded] = useState(false);
+
+    if (!expanded) {
+        return (
+            <button className="evidence-toggle" onClick={() => setExpanded(true)}>
+                <span className="toggle-icon">▶</span> Show Session Evidence
+            </button>
+        );
+    }
+
+    return (
+        <div className="evidence-block fade-in">
+            <div className="evidence-header" onClick={() => setExpanded(false)}>
+                <span className="toggle-icon">▼</span> Evidence from your session
+            </div>
+            <div className="evidence-pills">
+                {citations.map((time, i) => (
+                    <button key={i} className="timestamp-pill">
+                        {time}s
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+// Helper to add line breaks to coach answers
+function formatCoachText(text) {
+    return text.split('\n').map((line, i) => (
+        <p key={i} className={line.trim() === '' ? 'spacer' : 'text-line'}>
+            {line}
+        </p>
+    ));
 }

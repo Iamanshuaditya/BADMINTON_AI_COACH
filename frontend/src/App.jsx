@@ -210,7 +210,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <TopBar />
+      <TopBar sessionSummary={report ? report.metrics_summary : null} />
 
       <div className="main-layout">
         <div className="chat-columns">
@@ -223,10 +223,12 @@ function App() {
             drillType={drillType}
             setDrillType={setDrillType}
             chatLoading={chatLoading}
+            file={file}
           />
 
           <SessionDrawer
             report={report}
+            onAsk={(question) => handleSendMessage(question)}
           />
         </div>
       </div>

@@ -1,5 +1,5 @@
 .drawer {
-    width: 350px;
+    width: 320px;
     background: var(--bg-panel);
     border-left: 1px solid rgba(255, 255, 255, 0.05);
     display: flex;
@@ -12,17 +12,22 @@
     justify-content: center;
     color: var(--text-tertiary);
     font-size: 0.9rem;
+    background: var(--bg-app);
+    border-left: 1px solid rgba(255, 255, 255, 0.03);
 }
 
 .drawer-header {
-    padding: var(--space-md);
+    padding: var(--space-lg) var(--space-md);
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .drawer-header h3 {
-    font-size: 1rem;
-    color: var(--text-primary);
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    font-weight: 600;
     margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .drawer-tabs {
@@ -34,7 +39,7 @@
     flex: 1;
     padding: var(--space-md);
     color: var(--text-secondary);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     font-weight: 500;
     transition: all 0.2s;
     border-bottom: 2px solid transparent;
@@ -53,33 +58,27 @@
 .drawer-content {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-md);
+    padding: var(--space-lg) var(--space-md);
 }
 
 .section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-lg);
+    gap: var(--space-xl);
 }
 
-.score-card {
+.text-summary {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(255, 255, 255, 0.03);
-    padding: var(--space-md);
-    border-radius: var(--radius-md);
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding-bottom: var(--space-md);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.score-label {
-    color: var(--text-secondary);
+.summary-line {
     font-size: 0.9rem;
-}
-
-.score-value {
-    font-size: 1.25rem;
-    font-weight: 700;
     color: var(--text-primary);
+    line-height: 1.4;
 }
 
 .drawer-card {
@@ -90,55 +89,63 @@
 }
 
 .drawer-card.pinned {
-    border-color: var(--color-warning);
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), transparent);
+    border-color: var(--text-secondary);
+    /* Neutral but solid */
+    background: rgba(255, 255, 255, 0.02);
 }
 
 .card-label {
+    font-family: var(--font-display);
     font-size: 0.7rem;
     font-weight: 700;
-    color: var(--color-warning);
+    color: var(--accent-primary);
     letter-spacing: 0.05em;
     margin-bottom: var(--space-xs);
 }
 
 .drawer-card h4 {
-    margin: 0 0 var(--space-xs) 0;
-    font-size: 1rem;
+    margin: 0 0 var(--space-sm) 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    text-transform: capitalize;
 }
 
-.drawer-text-sm {
+.drawer-link {
     font-size: 0.85rem;
-    color: var(--text-secondary);
-    margin: 0;
-    line-height: 1.4;
+    color: var(--accent-secondary);
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
 }
 
-.tag-row {
-    margin-top: var(--space-sm);
-}
-
-.tag {
-    background: rgba(0, 0, 0, 0.3);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
+.drawer-link:hover {
+    text-decoration: underline;
 }
 
 .issues-list h4 {
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     color: var(--text-secondary);
-    margin-bottom: var(--space-sm);
+    margin-bottom: var(--space-md);
     text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
-.issue-row {
+.issue-row-btn {
     display: flex;
     justify-content: space-between;
+    width: 100%;
     padding: var(--space-sm) 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    text-align: left;
+}
+
+.issue-row-btn:hover {
+    background: rgba(255, 255, 255, 0.02);
+    padding-left: 4px;
+    /* subtle shift */
 }
 
 .issue-name {
@@ -167,28 +174,5 @@
 .event-name {
     font-size: 0.9rem;
     color: var(--text-primary);
-}
-
-.event-conf {
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
-}
-
-.drawer-footer {
-    padding: var(--space-md);
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.drawer-action-btn {
-    width: 100%;
-    padding: var(--space-sm);
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    transition: background 0.2s;
-}
-
-.drawer-action-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+    text-transform: capitalize;
 }

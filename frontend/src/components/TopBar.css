@@ -1,10 +1,10 @@
 .top-bar {
     height: 60px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 var(--space-lg);
+    padding: 0 var(--space-xl);
     background-color: var(--bg-app);
     z-index: 10;
 }
@@ -13,30 +13,60 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+    width: 200px;
+    /* Fixed width for balance */
+}
+
+.logo-text {
     font-family: var(--font-display);
     font-weight: 700;
-    font-size: 1.25rem;
+    font-size: 1.125rem;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+}
+
+.session-pill {
+    background: var(--bg-panel);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 6px 16px;
+    border-radius: var(--radius-full);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+
+.settings-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    width: 200px;
+    justify-content: flex-end;
+}
+
+.new-session-btn {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.new-session-btn:hover {
     color: var(--text-primary);
 }
 
-.logo-icon {
-    font-size: 1.5rem;
-}
-
-.current-session {
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-full);
-    background: rgba(255, 255, 255, 0.05);
-}
-
 .icon-btn {
-    padding: var(--space-sm);
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+    padding: var(--space-xs);
     border-radius: var(--radius-full);
-    transition: background 0.2s;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .icon-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.05);
 }
