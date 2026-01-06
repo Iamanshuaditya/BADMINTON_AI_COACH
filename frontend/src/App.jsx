@@ -1,7 +1,13 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import './App.css'
 
+// =============================================================================
+// Configuration
+// =============================================================================
+
 const API_BASE = ''
+const API_TIMEOUT = 60000 // 60 seconds for video analysis
+const MAX_RETRIES = 3
 
 const DRILL_TYPES = [
   { value: 'unknown', label: 'Select drill type...' },
@@ -15,91 +21,353 @@ const DRILL_TYPES = [
   { value: 'overhead-smash', label: '🏸 Smash Shadow Practice' },
 ]
 
-function App() {
-  const [file, setFile] = useState(null)
-  const [drillType, setDrillType] = useState('unknown')
-  const [status, setStatus] = useState('idle')
-  const [progress, setProgress] = useState('')
-  const [report, setReport] = useState(null)
-  const [chatMessages, setChatMessages] = useState([])
-  const [chatInput, setChatInput] = useState('')
-  const [sessionId, setSessionId] = useState(null)
-  const fileInputRef = useRef(null)
+// =============================================================================
+// API Utilities with Retry Logic
+// =============================================================================
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0]
-    if (selectedFile) {
-      setFile(selectedFile)
-      setReport(null)
-      setChatMessages([])
-      setSessionId(null)
+/**
+ * Custom API error with code and details
+ */
+class APIError extends Error {
+  constructor(message, code, status, details = {}) {
+    super(message)
+    this.code = code
+    this.status = status
+    this.details = details
+    this.name = 'APIError'
+  }
+}
+
+/**
+ * Fetch with timeout, retry, and error handling
+ */
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  const timeout = options.timeout || API_TIMEOUT
+  let lastError
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      })
+
+      clearTimeout(timeoutId)
+
+      // Parse response
+      const contentType = response.headers.get('content-type')
+      let data = null
+
+      if (contentType?.includes('application/json')) {
+        data = await response.json()
+      }
+
+      // Handle error responses
+      if (!response.ok) {
+        const errorCode = data?.error || 'UNKNOWN_ERROR'
+        const errorMessage = data?.detail || `HTTP ${response.status}`
+
+        // Don't retry client errors (4xx)
+        if (response.status >= 400 && response.status < 500) {
+          throw new APIError(errorMessage, errorCode, response.status, data?.details)
+        }
+
+        throw new APIError(errorMessage, errorCode, response.status, data?.details)
+      }
+
+      return data
+
+    } catch (error) {
+      clearTimeout(timeoutId)
+      lastError = error
+
+      // Handle abort/timeout
+      if (error.name === 'AbortError') {
+        lastError = new APIError(
+          'Request timed out. Please try again.',
+          'TIMEOUT',
+          408
+        )
+      }
+
+      // Don't retry on client errors
+      if (error instanceof APIError && error.status >= 400 && error.status < 500) {
+        throw error
+      }
+
+      // Log retry attempt
+      if (attempt < retries) {
+        console.log(`Retry attempt ${attempt + 1}/${retries} for ${url}`)
+        await new Promise(r => setTimeout(r, 1000 * attempt)) // Exponential backoff
+      }
     }
   }
 
-  const handleUploadAndAnalyze = async () => {
+  throw lastError
+}
+
+/**
+ * Upload file with progress tracking
+ */
+async function uploadWithProgress(url, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) {
+        const percent = Math.round((event.loaded / event.total) * 100)
+        onProgress(percent)
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText))
+        } catch (e) {
+          resolve(xhr.responseText)
+        }
+      } else {
+        try {
+          const data = JSON.parse(xhr.responseText)
+          reject(new APIError(
+            data.detail || `HTTP ${xhr.status}`,
+            data.error || 'UPLOAD_ERROR',
+            xhr.status,
+            data.details
+          ))
+        } catch (e) {
+          reject(new APIError(`Upload failed: HTTP ${xhr.status}`, 'UPLOAD_ERROR', xhr.status))
+        }
+      }
+    })
+
+    xhr.addEventListener('error', () => {
+      reject(new APIError('Network error during upload', 'NETWORK_ERROR', 0))
+    })
+
+    xhr.addEventListener('timeout', () => {
+      reject(new APIError('Upload timed out', 'TIMEOUT', 408))
+    })
+
+    xhr.timeout = API_TIMEOUT * 2 // Longer timeout for uploads
+    xhr.open('POST', url)
+    xhr.send(formData)
+  })
+}
+
+// =============================================================================
+// Error Display Component
+// =============================================================================
+
+function ErrorDisplay({ error, onDismiss }) {
+  if (!error) return null
+
+  const getErrorIcon = (code) => {
+    switch (code) {
+      case 'RATE_LIMIT_EXCEEDED':
+        return '⏱️'
+      case 'FILE_TOO_LARGE':
+        return '📦'
+      case 'INVALID_VIDEO_FORMAT':
+        return '🎬'
+      case 'INSUFFICIENT_POSE_DATA':
+        return '👤'
+      case 'TIMEOUT':
+        return '⌛'
+      default:
+        return '⚠️'
+    }
+  }
+
+  const getErrorHelp = (code) => {
+    switch (code) {
+      case 'RATE_LIMIT_EXCEEDED':
+        return 'Please wait a while before trying again.'
+      case 'FILE_TOO_LARGE':
+        return 'Try compressing your video or using a shorter clip.'
+      case 'INVALID_VIDEO_FORMAT':
+        return 'Please use MP4, MOV, or WebM format.'
+      case 'INSUFFICIENT_POSE_DATA':
+        return 'Make sure your full body is visible and well-lit.'
+      case 'TIMEOUT':
+        return 'The server is busy. Please try again in a moment.'
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div className="error-display">
+      <div className="error-header">
+        <span className="error-icon">{getErrorIcon(error.code)}</span>
+        <span className="error-code">{error.code || 'Error'}</span>
+        <button className="error-dismiss" onClick={onDismiss}>×</button>
+      </div>
+      <p className="error-message">{error.message}</p>
+      {getErrorHelp(error.code) && (
+        <p className="error-help">{getErrorHelp(error.code)}</p>
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// Main App Component
+// =============================================================================
+
+function App() {
+  // State
+  const [file, setFile] = useState(null)
+  const [drillType, setDrillType] = useState('unknown')
+  const [status, setStatus] = useState('idle') // idle, uploading, analyzing, complete, error
+  const [progress, setProgress] = useState({ stage: '', percent: 0 })
+  const [error, setError] = useState(null)
+  const [report, setReport] = useState(null)
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [sessionId, setSessionId] = useState(null)
+
+  const fileInputRef = useRef(null)
+
+  // ==========================================================================
+  // File Handling
+  // ==========================================================================
+
+  const handleFileChange = useCallback((e) => {
+    const selectedFile = e.target.files[0]
+    if (selectedFile) {
+      // Validate file type
+      const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm']
+      if (!validTypes.includes(selectedFile.type)) {
+        setError(new APIError(
+          'Invalid file type. Please upload MP4, MOV, or WebM.',
+          'INVALID_VIDEO_FORMAT',
+          415
+        ))
+        return
+      }
+
+      // Validate file size (500MB)
+      const maxSize = 500 * 1024 * 1024
+      if (selectedFile.size > maxSize) {
+        setError(new APIError(
+          `File too large: ${(selectedFile.size / 1024 / 1024).toFixed(1)}MB (max 500MB)`,
+          'FILE_TOO_LARGE',
+          413
+        ))
+        return
+      }
+
+      setFile(selectedFile)
+      setError(null)
+      setReport(null)
+      setChatMessages([])
+      setSessionId(null)
+      setStatus('idle')
+    }
+  }, [])
+
+  // ==========================================================================
+  // Upload & Analyze
+  // ==========================================================================
+
+  const handleUploadAndAnalyze = useCallback(async () => {
     if (!file) return
 
+    setError(null)
     setStatus('uploading')
-    setProgress('Uploading video...')
+    setProgress({ stage: 'Uploading video...', percent: 0 })
 
     const formData = new FormData()
     formData.append('file', file)
     formData.append('drill_type', drillType)
 
     try {
-      const response = await fetch(`${API_BASE}/api/upload-and-analyze`, {
-        method: 'POST',
-        body: formData,
-      })
+      // Upload with progress
+      const result = await uploadWithProgress(
+        `${API_BASE}/api/upload-and-analyze`,
+        formData,
+        (percent) => {
+          if (percent < 100) {
+            setProgress({ stage: 'Uploading video...', percent })
+          } else {
+            setStatus('analyzing')
+            setProgress({ stage: 'Analyzing video...', percent: 0 })
+          }
+        }
+      )
 
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || 'Analysis failed')
+      // Check for warnings
+      if (result.warnings?.length > 0) {
+        console.warn('Analysis warnings:', result.warnings)
       }
-
-      setProgress('Analyzing video...')
-      const result = await response.json()
 
       setSessionId(result.session_id)
       setReport(result.report)
       setStatus('complete')
-      setProgress('')
-    } catch (error) {
-      setStatus('error')
-      setProgress(`Error: ${error.message}`)
-    }
-  }
+      setProgress({ stage: '', percent: 0 })
 
-  const handleChat = async (e) => {
+    } catch (err) {
+      console.error('Upload/analyze failed:', err)
+      setStatus('error')
+      setError(err instanceof APIError ? err : new APIError(err.message, 'UNKNOWN_ERROR', 500))
+    }
+  }, [file, drillType])
+
+  // ==========================================================================
+  // Chat
+  // ==========================================================================
+
+  const handleChat = useCallback(async (e) => {
     e.preventDefault()
-    if (!chatInput.trim() || !sessionId) return
+    if (!chatInput.trim() || !sessionId || chatLoading) return
 
     const question = chatInput.trim()
     setChatInput('')
     setChatMessages(prev => [...prev, { role: 'user', content: question }])
+    setChatLoading(true)
 
     try {
-      const response = await fetch(`${API_BASE}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, question }),
-      })
+      const result = await fetchWithRetry(
+        `${API_BASE}/api/chat`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, question }),
+          timeout: 30000 // 30 second timeout for chat
+        },
+        2 // Only 2 retries for chat
+      )
 
-      const result = await response.json()
       setChatMessages(prev => [...prev, {
         role: 'assistant',
         content: result.answer,
         citations: result.citations,
         grounded: result.grounded
       }])
-    } catch (error) {
+
+    } catch (err) {
+      console.error('Chat failed:', err)
       setChatMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${error.message}`,
-        grounded: false
+        content: err instanceof APIError
+          ? `Sorry, I couldn't process that: ${err.message}`
+          : 'Sorry, something went wrong. Please try again.',
+        error: true
       }])
+    } finally {
+      setChatLoading(false)
     }
-  }
+  }, [chatInput, sessionId, chatLoading])
+
+  // ==========================================================================
+  // Render
+  // ==========================================================================
 
   return (
     <div className="app">
@@ -109,35 +377,45 @@ function App() {
       </header>
 
       <main className="main">
+        {/* Error Display */}
+        <ErrorDisplay error={error} onDismiss={() => setError(null)} />
+
         {/* Upload Section */}
         <section className="upload-section">
           <h2>Upload Video</h2>
 
-          <div className="upload-area" onClick={() => fileInputRef.current?.click()}>
+          <div
+            className={`upload-area ${file ? 'has-file' : ''}`}
+            onClick={() => fileInputRef.current?.click()}
+          >
             <input
               ref={fileInputRef}
               type="file"
-              accept="video/*"
+              accept="video/mp4,video/quicktime,video/x-msvideo,video/webm"
               onChange={handleFileChange}
               style={{ display: 'none' }}
             />
             {file ? (
               <div className="file-info">
                 <span className="file-icon">🎬</span>
-                <span>{file.name}</span>
+                <span className="file-name">{file.name}</span>
                 <span className="file-size">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
               </div>
             ) : (
               <div className="upload-prompt">
                 <span className="upload-icon">📁</span>
                 <span>Click to select video</span>
-                <span className="hint">MP4, MOV, or WebM</span>
+                <span className="hint">MP4, MOV, or WebM • Max 500MB</span>
               </div>
             )}
           </div>
 
           <div className="controls">
-            <select value={drillType} onChange={(e) => setDrillType(e.target.value)}>
+            <select
+              value={drillType}
+              onChange={(e) => setDrillType(e.target.value)}
+              disabled={status === 'uploading' || status === 'analyzing'}
+            >
               {DRILL_TYPES.map(d => (
                 <option key={d.value} value={d.value}>{d.label}</option>
               ))}
@@ -146,13 +424,29 @@ function App() {
             <button
               className="analyze-btn"
               onClick={handleUploadAndAnalyze}
-              disabled={!file || status === 'uploading'}
+              disabled={!file || status === 'uploading' || status === 'analyzing'}
             >
-              {status === 'uploading' ? 'Analyzing...' : 'Analyze Video'}
+              {status === 'uploading' ? 'Uploading...' :
+                status === 'analyzing' ? 'Analyzing...' :
+                  'Analyze Video'}
             </button>
           </div>
 
-          {progress && <div className="progress">{progress}</div>}
+          {/* Progress Bar */}
+          {(status === 'uploading' || status === 'analyzing') && (
+            <div className="progress-container">
+              <div className="progress-text">{progress.stage}</div>
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{
+                    width: status === 'analyzing' ? '100%' : `${progress.percent}%`,
+                    animation: status === 'analyzing' ? 'pulse 2s infinite' : 'none'
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Report Section */}
@@ -216,9 +510,9 @@ function App() {
                 <div className="events-list">
                   {report.events?.slice(0, 10).map((e, i) => (
                     <div key={i} className="event-item">
-                      <span className="event-time">[{e.timestamp}s]</span>
+                      <span className="event-time">[{e.timestamp?.toFixed(1)}s]</span>
                       <span className="event-type">{e.type?.replace(/_/g, ' ')}</span>
-                      <span className="event-conf">{(e.confidence * 100).toFixed(0)}%</span>
+                      <span className="event-conf">{((e.confidence || 0) * 100).toFixed(0)}%</span>
                     </div>
                   ))}
                   {report.events?.length > 10 && (
@@ -253,7 +547,7 @@ function App() {
                 </div>
               )}
               {chatMessages.map((msg, i) => (
-                <div key={i} className={`chat-message ${msg.role}`}>
+                <div key={i} className={`chat-message ${msg.role} ${msg.error ? 'error' : ''}`}>
                   <div className="message-content">{msg.content}</div>
                   {msg.citations?.length > 0 && (
                     <div className="citations">
@@ -262,6 +556,13 @@ function App() {
                   )}
                 </div>
               ))}
+              {chatLoading && (
+                <div className="chat-message assistant loading">
+                  <div className="typing-indicator">
+                    <span></span><span></span><span></span>
+                  </div>
+                </div>
+              )}
             </div>
 
             <form className="chat-input-form" onSubmit={handleChat}>
@@ -270,15 +571,18 @@ function App() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 placeholder="Ask about your footwork..."
+                disabled={chatLoading}
               />
-              <button type="submit" disabled={!chatInput.trim()}>Send</button>
+              <button type="submit" disabled={!chatInput.trim() || chatLoading}>
+                {chatLoading ? '...' : 'Send'}
+              </button>
             </form>
           </section>
         )}
       </main>
 
       <footer className="footer">
-        <p>ShuttleSense V1 • Built for improvement, not perfection</p>
+        <p>ShuttleSense V2 • Built for improvement, not perfection</p>
       </footer>
     </div>
   )

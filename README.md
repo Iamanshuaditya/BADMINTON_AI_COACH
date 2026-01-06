@@ -1,39 +1,77 @@
 # ShuttleSense - AI Badminton Footwork Coach
 
-Real-time badminton footwork analysis from video using pose estimation and rules-based coaching.
+Real-time badminton footwork and stroke analysis from video using pose estimation and AI-powered coaching.
+
+![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+## 🎯 Features
+
+- **Video Analysis**: Upload badminton practice videos for AI-powered analysis
+- **Pose Detection**: MediaPipe-based pose extraction with keypoint smoothing
+- **Footwork Analysis**: Detect split steps, lunges, recovery patterns
+- **Stroke Analysis**: Overhead stroke mechanics evaluation
+- **Mistake Detection**: Identify common issues (knee collapse, poor stance, etc.)
+- **Fix-First Plan**: Prioritized improvement recommendations
+- **AI Coach Chat**: Ask questions about your session, grounded in evidence
 
 ## 🏗️ Project Structure
 
 ```
 BADMINTON_AI_COACH/
-├── backend/                 # FastAPI backend
-│   ├── config/             # Configurable thresholds
-│   │   └── thresholds.py   # All tunable parameters
-│   ├── core/               # Processing pipeline
-│   │   ├── one_euro_filter.py   # Keypoint smoothing
-│   │   ├── pose_extractor.py    # MediaPipe pose extraction
-│   │   ├── feature_computer.py  # Biomechanical features
-│   │   ├── event_fsm.py         # Event detection FSM
-│   │   ├── mistake_detector.py  # Mistake detection rules
-│   │   ├── report_generator.py  # Coach report generation
-│   │   ├── grounded_chat.py     # RAG-based chat
-│   │   └── pipeline.py          # Full analysis orchestration
-│   ├── tests/              # Unit tests
-│   ├── data/               # Session data (created on run)
-│   │   ├── uploads/        # Uploaded videos
-│   │   └── sessions/       # Analysis results
-│   ├── main.py             # FastAPI app
-│   └── requirements.txt    # Python dependencies
-├── frontend/               # React + Vite frontend
-│   └── src/
-│       ├── App.jsx         # Main application
-│       └── App.css         # Styling
-└── docs/                   # Research & planning
+├── backend/                    # FastAPI backend
+│   ├── auth/                   # JWT authentication
+│   ├── config/                 # Settings & thresholds
+│   ├── core/                   # Processing pipeline
+│   │   ├── pose_extractor.py   # MediaPipe pose extraction
+│   │   ├── feature_computer.py # Biomechanical features
+│   │   ├── event_fsm.py        # Event detection FSM
+│   │   ├── mistake_detector.py # Mistake detection rules
+│   │   ├── stroke_analyzer.py  # Overhead stroke analysis
+│   │   ├── report_generator.py # Coach report generation
+│   │   ├── grounded_chat.py    # RAG-based chat
+│   │   └── pipeline.py         # Full analysis orchestration
+│   ├── middleware/             # Error handling, rate limiting
+│   ├── tests/                  # Unit & integration tests
+│   ├── main.py                 # FastAPI app
+│   ├── Dockerfile              # Production Docker image
+│   └── requirements.txt        # Python dependencies
+├── frontend/                   # React + Vite frontend
+│   ├── src/
+│   │   ├── App.jsx             # Main application
+│   │   └── App.css             # Styling
+│   ├── Dockerfile              # Production Docker image
+│   └── nginx.conf              # Nginx configuration
+├── docs/                       # Documentation
+│   ├── API.md                  # API reference
+│   └── DEPLOYMENT.md           # Deployment guide
+├── .github/workflows/          # CI/CD pipelines
+└── docker-compose.yml          # Docker orchestration
 ```
 
 ## 🚀 Quick Start
 
-### 1. Backend Setup
+### Option 1: Docker (Recommended)
+
+```bash
+# Clone repository
+git clone <repository-url>
+cd BADMINTON_AI_COACH
+
+# Copy environment file
+cp backend/.env.example backend/.env
+# Edit .env and set GOOGLE_API_KEY (optional, for AI chat)
+
+# Build and run
+docker-compose up --build
+
+# Access the app at http://localhost:80
+```
+
+### Option 2: Local Development
+
+#### Backend Setup
 
 ```bash
 cd backend
@@ -45,16 +83,16 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# (Optional) Set Gemini API key for chat
-export GOOGLE_API_KEY=your_api_key_here
+# Copy environment file
+cp .env.example .env
 
 # Start server
 python main.py
-# or
+# or with hot reload:
 uvicorn main:app --reload --port 8000
 ```
 
-### 2. Frontend Setup
+#### Frontend Setup
 
 ```bash
 cd frontend
@@ -66,13 +104,13 @@ npm install
 npm run dev
 ```
 
-### 3. Use the App
+### Access Points
 
-1. Open http://localhost:3000
-2. Upload a badminton footwork video
-3. Select drill type
-4. Click "Analyze Video"
-5. View report and chat with the coach
+| Service | Development | Docker |
+|---------|-------------|--------|
+| Frontend | http://localhost:5173 | http://localhost:80 |
+| Backend API | http://localhost:8000 | http://localhost:8000 |
+| API Docs | http://localhost:8000/docs | (disabled in prod) |
 
 ## 📡 API Endpoints
 
@@ -84,99 +122,153 @@ npm run dev
 | `/api/report/{session_id}` | GET | Get session report |
 | `/api/chat` | POST | Ask grounded questions |
 | `/api/sessions` | GET | List all sessions |
+| `/api/session/{session_id}` | DELETE | Delete a session |
+| `/health` | GET | Health check |
+| `/health/ready` | GET | Readiness probe |
+| `/metrics` | GET | System metrics |
 
-## 🎯 Coach Report JSON Schema
+See [docs/API.md](docs/API.md) for full API documentation.
+
+## 🎯 Coach Report Schema
 
 ```json
 {
   "session_id": "abc12345",
-  "created_at": "2026-01-04T15:30:00Z",
   "video_duration": 45.2,
   "fps": 30,
-  "resolution": {"width": 1920, "height": 1080},
   "drill_type": "6-corner-shadow",
   "events": [
-    {
-      "type": "split_step",
-      "timestamp": 5.3,
-      "end_timestamp": 5.7,
-      "duration": 0.4,
-      "confidence": 0.92
-    }
+    {"type": "split_step", "timestamp": 5.3, "confidence": 0.92}
   ],
   "mistakes": [
-    {
-      "type": "knee_collapse",
-      "timestamp": 12.1,
-      "duration": 0.8,
-      "severity": 0.7,
-      "confidence": 0.85,
-      "cue": "Knee out",
-      "description": "Knee collapsing inward during lunge",
-      "evidence": [11.9, 12.1, 12.5]
-    }
+    {"type": "knee_collapse", "timestamp": 12.1, "severity": 0.7, "cue": "Knee out"}
   ],
   "top_mistakes": [
     {"type": "knee_collapse", "count": 3, "cue": "Knee out"}
   ],
   "fix_first_plan": {
     "primary_issue": "knee_collapse",
-    "occurrences": 3,
     "cue": "Knee out",
-    "focus_drill": "Single-leg squats - knee over toes",
-    "key_timestamps": [12.1, 24.5, 38.2]
-  },
-  "metrics_summary": {
-    "avg_stance_width_ratio": 1.05,
-    "avg_pose_confidence": 0.87,
-    "total_events": 15,
-    "total_mistakes": 5
-  },
-  "confidence_notes": []
+    "focus_drill": "Single-leg squats - knee over toes"
+  }
 }
 ```
 
 ## ⚙️ Configuration
 
-All thresholds are in `backend/config/thresholds.py`. Key parameters:
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GOOGLE_API_KEY` | No | Gemini API for AI chat |
+| `JWT_SECRET_KEY` | Yes (prod) | Secret for JWT auth |
+| `ENVIRONMENT` | No | `development` or `production` |
+| `CORS_ORIGINS` | No | Allowed origins (comma-separated) |
+| `RATE_LIMIT_ENABLED` | No | Enable rate limiting (default: true) |
+
+### Thresholds
+
+All analysis thresholds are in `backend/config/thresholds.py`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `split_step.window_ms` | 400 | Split step detection window |
 | `stance.min_ratio` | 0.7 | Minimum stance width ratio |
 | `knee.valgus_threshold` | 8.0 | Knee collapse angle threshold |
-| `recovery.max_time_sec` | 2.0 | Max recovery time to base |
-| `fsm.cue_cooldown_sec` | 1.5 | Cooldown between same cue |
 
-## 🧪 Running Tests
+## 🧪 Testing
 
 ```bash
 cd backend
+
+# Run all tests
 pytest tests/ -v
+
+# With coverage
+pytest tests/ --cov=core --cov-report=html
+
+# Integration tests only
+pytest tests/test_integration.py -v
+```
+
+## 🐳 Docker
+
+```bash
+# Build images
+docker-compose build
+
+# Run in background
+docker-compose up -d
+
+# View logs
+docker-compose logs -f backend
+
+# Stop services
+docker-compose down
 ```
 
 ## 📹 Video Requirements
 
 - **Format**: MP4, MOV, WebM
-- **Camera angle**: Behind or 45° back-side (preferred)
+- **Max Size**: 500MB
+- **Camera Angle**: Behind or 45° back-side (preferred)
 - **Visibility**: Full body (head to feet)
 - **Setup**: Phone on tripod, static camera
-- **Frame rate**: 30 FPS or higher
+- **Frame Rate**: 30 FPS or higher
 
-## 🔒 Privacy
+## 🔒 Security Features
 
-- By default, only pose JSON and reports are stored
-- Raw video is optional (for playback only)
-- All processing is local (no cloud required for V1)
-- Delete sessions via API or delete `data/sessions/` folder
+- **JWT Authentication** (optional, easily enabled)
+- **Rate Limiting**: Per-IP and per-user limits
+- **CORS Configuration**: Configurable allowed origins
+- **File Validation**: Size limits, MIME type checking
+- **Error Handling**: Structured error responses
+
+## 📊 Monitoring
+
+- **Health Endpoints**: `/health`, `/health/live`, `/health/ready`
+- **Metrics**: `/metrics` for CPU, memory, disk usage
+- **Structured Logging**: JSON format for log aggregation
+- **Correlation IDs**: Request tracing support
 
 ## 🛠️ Tech Stack
 
-- **Backend**: FastAPI, MediaPipe Pose, OpenCV
-- **Frontend**: React, Vite
-- **Smoothing**: OneEuro Filter
-- **Chat**: Gemini API (optional) or stub mode
+### Backend
+- **Framework**: FastAPI
+- **Pose Detection**: MediaPipe Pose
+- **Computer Vision**: OpenCV
+- **AI Chat**: Google Gemini API
+- **Auth**: python-jose (JWT)
+
+### Frontend
+- **Framework**: React 18
+- **Build Tool**: Vite
+- **Styling**: CSS with CSS Variables
+
+### Infrastructure
+- **Containerization**: Docker
+- **Orchestration**: Docker Compose
+- **CI/CD**: GitHub Actions
+- **Web Server**: Nginx (production)
+
+## 📖 Documentation
+
+- [API Reference](docs/API.md)
+- [Deployment Guide](docs/DEPLOYMENT.md)
+
+## 🔄 Development Workflow
+
+1. Create feature branch from `develop`
+2. Make changes with tests
+3. Run `pytest` and fix any failures
+4. Create PR to `develop`
+5. After review, merge to `develop`
+6. Release: merge `develop` to `main`
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
 
 ---
 
-Built with ❤️ for badminton improvement
+Built with ❤️ for badminton improvement | v2.0.0

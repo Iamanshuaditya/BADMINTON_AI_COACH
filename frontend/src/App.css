@@ -477,3 +477,215 @@ body {
     margin-right: 10%;
   }
 }
+
+/* =============================================================================
+   Error Display Styles
+   ============================================================================= */
+
+.error-display {
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.15), rgba(255, 107, 107, 0.05));
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.error-icon {
+  font-size: 1.25rem;
+}
+
+.error-code {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: rgba(255, 107, 107, 0.2);
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  color: var(--error);
+}
+
+.error-dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+}
+
+.error-dismiss:hover {
+  color: var(--text-primary);
+}
+
+.error-message {
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.error-help {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+/* =============================================================================
+   Progress Bar Styles
+   ============================================================================= */
+
+.progress-container {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--bg-card);
+  border-radius: 8px;
+}
+
+.progress-text {
+  color: var(--accent);
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #00ff88);
+  border-radius: 3px;
+  transition: width 0.3s ease-out;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* =============================================================================
+   Chat Loading Indicator
+   ============================================================================= */
+
+.chat-message.loading {
+  padding: 1rem;
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+
+.typing-indicator span {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
+.chat-message.error {
+  border: 1px solid var(--error);
+  background: rgba(255, 107, 107, 0.1);
+}
+
+/* =============================================================================
+   Upload Area Enhanced States
+   ============================================================================= */
+
+.upload-area.has-file {
+  border-color: var(--accent);
+  background: rgba(0, 212, 170, 0.05);
+}
+
+.file-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+/* =============================================================================
+   Additional Polish
+   ============================================================================= */
+
+/* Smooth transitions */
+.card,
+.upload-area,
+.analyze-btn,
+.chat-input-form button,
+.controls select {
+  transition: all 0.2s ease;
+}
+
+/* Focus states for accessibility */
+.controls select:focus,
+.chat-input-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.2);
+}
+
+/* Better button hover states */
+.chat-input-form button:hover:not(:disabled) {
+  background: #00e5b8;
+  transform: translateY(-1px);
+}
+
+/* Card hover effects */
+.card:hover {
+  border-color: var(--accent-dim);
+}
+
+.fix-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 20px rgba(0, 212, 170, 0.15);
+}
+
