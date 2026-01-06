@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # API Keys
     GOOGLE_API_KEY: Optional[str] = Field(default=None, description="Google Gemini API key for chat")
     
+    # LLM Settings
+    LLM_PROVIDER: str = Field(default="gemini", description="gemini or anthropic (for proxy)")
+    LLM_PROXY_URL: Optional[str] = Field(default="http://localhost:8000/v1", description="URL for LLM proxy")
+    
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_UPLOAD: str = "10/hour"

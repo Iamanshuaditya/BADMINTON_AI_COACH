@@ -1,12 +1,16 @@
 """
 Grounded Chat Module
 Implements RAG-based chat that answers ONLY from evidence.
+Supports both direct Google Gemini API and Anthropic-compatible proxies.
 """
 
 import os
 import re
 from typing import Dict, List, Optional
 import logging
+
+# Import settings
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +20,13 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
+
+# Try to import Anthropic
+try:
+    from anthropic import Anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
 
 STRICT_SYSTEM_PROMPT = """You are a badminton footwork coach assistant. You analyze video session data.
@@ -116,14 +127,34 @@ class GroundedChat:
     """Chat interface that grounds all responses in evidence."""
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
-        self.model = None
+        self.settings = get_settings()
+        self.api_key = api_key or self.settings.GOOGLE_API_KEY or "dummy"
+        self.provider = self.settings.LLM_PROVIDER
+        self.proxy_url = self.settings.LLM_PROXY_URL
         
-        if GEMINI_AVAILABLE and self.api_key:
+        self.genai_model = None
+        self.anthropic_client = None
+        
+        # Initialize provider
+        if self.provider == "anthropic" or "proxy" in self.provider:
+            if ANTHROPIC_AVAILABLE:
+                try:
+                    # Point to proxy
+                    self.anthropic_client = Anthropic(
+                        api_key=self.api_key,
+                        base_url=self.proxy_url
+                    )
+                    logger.info(f"Initialized Anthropic client with proxy: {self.proxy_url}")
+                except Exception as e:
+                    logger.error(f"Failed to init Anthropic client: {e}")
+            else:
+                logger.error("Anthropic library not installed. Cannot use proxy.")
+        
+        elif GEMINI_AVAILABLE and self.settings.GOOGLE_API_KEY:
             try:
-                genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
-                logger.info("Gemini model initialized")
+                genai.configure(api_key=self.settings.GOOGLE_API_KEY)
+                self.genai_model = genai.GenerativeModel('gemini-pro')
+                logger.info("Gemini model initialized (Direct API)")
             except Exception as e:
                 logger.warning(f"Failed to init Gemini: {e}")
     
@@ -151,17 +182,29 @@ class GroundedChat:
             }
         
         prompt = build_chat_prompt(question, relevant, session_summary)
+        answer = self._fallback_response(question, relevant)
         
-        # Try Gemini
-        if self.model:
-            try:
-                response = self.model.generate_content(prompt)
+        # Try LLM
+        try:
+            if self.anthropic_client:
+                # Use proxy
+                response = self.anthropic_client.messages.create(
+                    model="claude-sonnet-4-5", # Model name usually ignored by proxy or maps to Gemini
+                    max_tokens=1024,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                answer = response.content[0].text
+                
+            elif self.genai_model:
+                # Use Gemini Direct
+                response = self.genai_model.generate_content(prompt)
                 answer = response.text
-            except Exception as e:
-                logger.error(f"Gemini error: {e}")
-                answer = self._fallback_response(question, relevant)
-        else:
-            answer = self._fallback_response(question, relevant)
+                
+        except Exception as e:
+            logger.error(f"LLM generation failed ({self.provider}): {e}")
+            # Fallback already set
         
         # Extract citations
         citations = self._extract_citations(answer)
