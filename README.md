@@ -137,6 +137,8 @@ See [docs/API.md](docs/API.md) for full API documentation.
   "video_duration": 45.2,
   "fps": 30,
   "drill_type": "6-corner-shadow",
+  "drill_type_source": "auto",
+  "drill_type_confidence": 0.72,
   "events": [
     {"type": "split_step", "timestamp": 5.3, "confidence": 0.92}
   ],
@@ -175,6 +177,91 @@ All analysis thresholds are in `backend/config/thresholds.py`:
 | `split_step.window_ms` | 400 | Split step detection window |
 | `stance.min_ratio` | 0.7 | Minimum stance width ratio |
 | `knee.valgus_threshold` | 8.0 | Knee collapse angle threshold |
+| `embeddings.similarity_threshold` | 0.35 | Minimum similarity for grounded chat |
+| `chat_grounding.min_evidence_chunks` | 2 | Minimum relevant chunks for grounded chat |
+| `drill_classifier.confidence_threshold` | 0.55 | Minimum confidence to accept auto-detection |
+| `drill_classifier.min_frames` | 30 | Minimum frames for drill classification |
+
+### Drill Auto-Detection
+
+When `drill_type` is set to `"unknown"`, ShuttleSense automatically classifies the drill type from motion patterns:
+
+| Drill Type | Detection Signature |
+|------------|---------------------|
+| `overhead-shadow` | Wrist above shoulder for 30%+ frames, vertical arm velocity spikes |
+| `footwork` | Significant hip lateral movement, direction changes, arms below shoulder |
+| `6-corner-shadow` | Multi-directional movement patterns with some arm elevation |
+
+**Configuration (`backend/config/thresholds.py`):**
+
+```python
+drill_classifier:
+  confidence_threshold: 0.55      # Minimum to accept auto-detection
+  min_frames: 30                  # Required valid frames
+  min_pose_confidence: 0.7        # Filter low-quality frames
+  default_drill_type: "footwork"  # Fallback when uncertain
+```
+
+The report includes:
+- `drill_type_source`: `"user"`, `"auto"`, or `"default"`
+- `drill_type_confidence`: 0.0 - 1.0 (1.0 for user-specified)
+
+### Embeddings-Based Chat
+
+Chat uses semantic embeddings for evidence retrieval instead of keyword matching:
+
+**How it works:**
+1. On video analysis, evidence chunks are created from the report
+2. Embeddings are computed using `sentence-transformers` (all-MiniLM-L6-v2)
+3. Embeddings are cached to `data/sessions/<session_id>/embeddings.json`
+4. At chat time, cached embeddings are loaded (no recompute if unchanged)
+5. The query is embedded and compared via cosine similarity
+6. Top-k relevant chunks are retrieved for grounded response
+
+**Configuration:**
+
+```python
+embeddings:
+  similarity_threshold: 0.35   # Below this = grounded=false
+  top_k: 5                     # Chunks to retrieve
+  model_name: "all-MiniLM-L6-v2"
+  cache_embeddings: true
+
+chat_grounding:
+  max_evidence_chunks: 5
+  min_evidence_chunks: 2
+  require_citations: true
+  include_debug: false
+```
+
+**Grounding behavior:**
+- If max similarity < threshold: returns `grounded: false` with suggested questions
+- If relevant chunks < `min_evidence_chunks`: returns `grounded: false`
+- Every answer must cite timestamps like `[12.9s]`
+- One correction at a time with micro-drill recommendation
+
+## ✅ Example Output JSON
+
+```json
+{
+  "report": {
+    "session_id": "abc12345",
+    "drill_type": "footwork",
+    "drill_type_source": "auto",
+    "drill_type_confidence": 0.72,
+    "confidence_notes": [
+      "Low pose detection rate (68%). Analysis accuracy may be reduced."
+    ]
+  },
+  "chat_response": {
+    "answer": "Focus on knee collapse at [12.1s]. Cue: Knee out [12.1s]. 30-60s micro-drill: Single-leg squats - knee over toes [12.1s].",
+    "grounded": true,
+    "citations": [
+      { "timestamp": 12.1, "type": "evidence_reference" }
+    ]
+  }
+}
+```
 
 ## 🧪 Testing
 

@@ -17,7 +17,10 @@ from .feature_computer import FeatureComputer, compute_windowed_features
 from .event_fsm import FootworkFSM
 from .mistake_detector import MistakeDetector, DetectedMistake
 from .stroke_analyzer import OverheadStrokeAnalyzer, StrokeMistake
-from .report_generator import generate_report, report_to_dict, create_evidence_chunks
+from .report_generator import generate_report, report_to_dict
+from .motion_classifier import classify_drill, ClassificationResult
+from .embeddings import EmbeddingsManager, create_structured_chunks
+from config import get_thresholds
 
 # Import exceptions
 import sys
@@ -138,6 +141,12 @@ class AnalysisPipeline:
         self.event_fsm = FootworkFSM()
         self.mistake_detector = MistakeDetector()
         self.stroke_analyzer = OverheadStrokeAnalyzer()
+        
+        # Embeddings manager for caching
+        self.embeddings_manager = EmbeddingsManager(str(self.output_dir))
+        
+        # Thresholds for drill classification
+        self._thresholds = get_thresholds()
     
     def _validate_video_path(self, video_path: str) -> Path:
         """Validate video file exists and is accessible"""
@@ -277,7 +286,10 @@ class AnalysisPipeline:
         events: List,
         mistakes: List,
         drill_type: str,
-        stroke_data: Optional[Dict],
+        drill_type_source: str = "user",
+        drill_type_confidence: float = 1.0,
+        stroke_data: Optional[Dict] = None,
+        confidence_notes_extra: Optional[List[str]] = None,
         progress_callback: Optional[Callable] = None
     ) -> tuple:
         """Generate report with error handling"""
@@ -293,11 +305,14 @@ class AnalysisPipeline:
                 events=events,
                 mistakes=mistakes,
                 drill_type=drill_type,
-                stroke_data=stroke_data
+                drill_type_source=drill_type_source,
+                drill_type_confidence=drill_type_confidence,
+                stroke_data=stroke_data,
+                confidence_notes_extra=confidence_notes_extra
             )
             
             report_dict = report_to_dict(report)
-            evidence_chunks = create_evidence_chunks(report)
+            evidence_chunks = create_structured_chunks(report_dict)
             
             if progress_callback:
                 progress_callback("report_generation", 1.0)
@@ -307,6 +322,207 @@ class AnalysisPipeline:
         except Exception as e:
             logger.error(f"Report generation failed: {e}", exc_info=True)
             raise ReportGenerationError(f"Failed to generate report: {str(e)}")
+
+    def _run_analysis_from_pose_data(
+        self,
+        pose_data: Dict,
+        drill_type: str,
+        session_id: str,
+        result: AnalysisResult,
+        start_time: float,
+        session_dir: Path,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict:
+        """Run analysis stages that depend on pose data."""
+        # Stage 3: Auto-detect drill type if unknown
+        frames = pose_data.get("frames", [])
+        drill_type_source = "user"
+        drill_type_confidence = 1.0
+        confidence_notes_extra: List[str] = []
+        classification_result: Optional[ClassificationResult] = None
+
+        if drill_type == "unknown":
+            logger.info(f"[{session_id}] Drill type unknown, running auto-detection...")
+            classification_result = classify_drill(frames)
+
+            config = self._thresholds.drill_classifier
+
+            if classification_result.detected_drill_type != "unknown" and \
+               classification_result.confidence >= config.confidence_threshold:
+                # Accept auto-detection
+                drill_type = classification_result.detected_drill_type
+                drill_type_source = "auto"
+                drill_type_confidence = classification_result.confidence
+                logger.info(
+                    f"[{session_id}] Auto-detected drill type: {drill_type} "
+                    f"(confidence: {drill_type_confidence:.2f})"
+                )
+            else:
+                # Fall back to default
+                drill_type = config.default_drill_type
+                drill_type_source = "default"
+                drill_type_confidence = classification_result.confidence
+                note = (
+                    "Drill type auto-detection uncertain "
+                    f"(confidence: {drill_type_confidence:.2f}). "
+                    f"Defaulting to '{drill_type}'."
+                )
+                confidence_notes_extra.append(note)
+                result.add_warning(note)
+                logger.info(
+                    f"[{session_id}] Auto-detection uncertain, defaulting to: {drill_type}. "
+                    f"Reason: {classification_result.reason}"
+                )
+
+            # Log debug features
+            logger.debug(f"[{session_id}] Classification debug: {classification_result.debug_features}")
+            result.complete_stage("drill_classification")
+
+        # Determine analysis mode based on (possibly auto-detected) drill type
+        do_footwork = is_footwork_drill(drill_type) or drill_type == "unknown"
+        do_stroke = is_stroke_drill(drill_type)
+
+        # Stage 4: Compute features
+        features, windowed = self._compute_features_safe(frames, progress_callback)
+        result.complete_stage("feature_computation")
+
+        # Track stats
+        frames_with_pose = sum(1 for f in frames if f.get("landmarks"))
+        if frames_with_pose < len(frames) * 0.5:
+            note = (
+                f"Only {frames_with_pose}/{len(frames)} frames had detected poses. "
+                "Consider better lighting or camera angle."
+            )
+            confidence_notes_extra.append(note)
+            result.add_warning(note)
+
+        # Add uncertainty handling for low pose coverage
+        pose_coverage = frames_with_pose / len(frames) if frames else 0
+        if pose_coverage < 0.7:
+            note = (
+                f"Low pose detection rate ({pose_coverage:.0%}). "
+                "Analysis accuracy may be reduced."
+            )
+            confidence_notes_extra.append(note)
+            result.add_warning(note)
+
+        # Initialize results
+        events = []
+        all_mistakes = []
+        stroke_data = None
+
+        # Stage 4: Footwork analysis (if applicable)
+        if do_footwork:
+            events, footwork_mistakes = self._analyze_footwork_safe(
+                features, windowed, progress_callback
+            )
+            all_mistakes.extend(footwork_mistakes)
+            result.complete_stage("footwork_analysis")
+
+        # Stage 5: Stroke analysis (if applicable)
+        if do_stroke:
+            strokes, analyses, stroke_mistakes = self._analyze_strokes_safe(
+                frames, features, progress_callback
+            )
+
+            # Convert stroke mistakes to common format
+            for sm in stroke_mistakes:
+                all_mistakes.append(DetectedMistake(
+                    mistake_type=sm.mistake_type,
+                    timestamp=sm.timestamp,
+                    duration=sm.duration,
+                    severity=sm.severity,
+                    confidence=sm.confidence,
+                    evidence_timestamps=sm.evidence_timestamps,
+                    cue=sm.cue,
+                    description=sm.description,
+                    metadata=sm.metadata
+                ))
+
+            # Store stroke-specific data
+            if strokes:
+                stroke_data = {
+                    "strokes_detected": len(strokes),
+                    "strokes": [
+                        {
+                            "stroke_id": s.stroke_id,
+                            "start_timestamp": round(s.start_timestamp, 2),
+                            "contact_timestamp": round(s.contact_proxy_timestamp, 2),
+                            "end_timestamp": round(s.end_timestamp, 2),
+                            "duration": round(s.duration, 2),
+                            "overhead_confidence": round(s.overhead_confidence, 2),
+                            "dominant_side": s.dominant_side
+                        }
+                        for s in strokes
+                    ],
+                    "analyses": [
+                        {
+                            "stroke_id": a.stroke.stroke_id,
+                            "is_valid_overhead": a.is_valid_overhead,
+                            "contact_height_status": a.contact_height_status,
+                            "wrist_above_shoulder": a.wrist_above_shoulder,
+                            "contact_in_front": a.contact_in_front,
+                            "elbow_leads_wrist": a.elbow_leads_wrist,
+                            "ready_position_good": a.ready_position_good
+                        }
+                        for a in analyses
+                    ]
+                }
+
+            result.complete_stage("stroke_analysis")
+
+        # Stage 6: Generate report (with drill type source/confidence)
+        report_dict, evidence_chunks = self._generate_report_safe(
+            session_id=session_id,
+            video_metadata=pose_data.get("video_metadata", {}),
+            processing_stats=pose_data.get("processing_stats", {}),
+            features=features,
+            events=events,
+            mistakes=all_mistakes,
+            drill_type=drill_type,
+            drill_type_source=drill_type_source,
+            drill_type_confidence=drill_type_confidence,
+            stroke_data=stroke_data,
+            confidence_notes_extra=confidence_notes_extra,
+            progress_callback=progress_callback
+        )
+        result.complete_stage("report_generation")
+
+        # Stage 7: Compute and cache embeddings for chat
+        try:
+            self.embeddings_manager.compute_embeddings(session_id, evidence_chunks)
+            result.complete_stage("embeddings_computation")
+        except Exception as e:
+            logger.warning(f"Embeddings computation failed: {e}. Chat will use keyword fallback.")
+
+        # Save outputs
+        report_path = session_dir / "report.json"
+        with open(report_path, 'w') as f:
+            json.dump(report_dict, f, indent=2)
+
+        chunks_path = session_dir / "evidence_chunks.json"
+        with open(chunks_path, 'w') as f:
+            json.dump(evidence_chunks, f, indent=2)
+
+        # Mark success
+        result.success = True
+        result.processing_time_sec = time.time() - start_time
+        result.data = {
+            "report": report_dict,
+            "evidence_chunks": evidence_chunks,
+            "output_dir": str(session_dir)
+        }
+
+        logger.info(
+            f"Analysis complete for {session_id}: "
+            f"{len(events)} events, {len(all_mistakes)} mistakes "
+            f"in {result.processing_time_sec:.1f}s"
+        )
+
+        if stroke_data:
+            logger.info(f"  Strokes detected: {stroke_data['strokes_detected']}")
+
+        return result.to_dict()
     
     def analyze(
         self,
@@ -351,10 +567,6 @@ class AnalysisPipeline:
             video_path = str(self._validate_video_path(video_path))
             result.complete_stage("validation")
             
-            # Determine analysis mode
-            do_footwork = is_footwork_drill(drill_type) or drill_type == "unknown"
-            do_stroke = is_stroke_drill(drill_type)
-            
             # Stage 2: Extract poses
             pose_data = self._extract_poses_safe(video_path, progress_callback)
             result.complete_stage("pose_extraction")
@@ -363,126 +575,15 @@ class AnalysisPipeline:
                 poses_path = session_dir / "poses.json"
                 save_poses_to_json(pose_data, str(poses_path))
             
-            # Stage 3: Compute features
-            frames = pose_data.get("frames", [])
-            features, windowed = self._compute_features_safe(frames, progress_callback)
-            result.complete_stage("feature_computation")
-            
-            # Track stats
-            frames_with_pose = sum(1 for f in frames if f.get("landmarks"))
-            if frames_with_pose < len(frames) * 0.5:
-                result.add_warning(
-                    f"Only {frames_with_pose}/{len(frames)} frames had detected poses. "
-                    "Consider better lighting or camera angle."
-                )
-            
-            # Initialize results
-            events = []
-            all_mistakes = []
-            stroke_data = None
-            
-            # Stage 4: Footwork analysis (if applicable)
-            if do_footwork:
-                events, footwork_mistakes = self._analyze_footwork_safe(
-                    features, windowed, progress_callback
-                )
-                all_mistakes.extend(footwork_mistakes)
-                result.complete_stage("footwork_analysis")
-            
-            # Stage 5: Stroke analysis (if applicable)
-            if do_stroke:
-                strokes, analyses, stroke_mistakes = self._analyze_strokes_safe(
-                    frames, features, progress_callback
-                )
-                
-                # Convert stroke mistakes to common format
-                for sm in stroke_mistakes:
-                    all_mistakes.append(DetectedMistake(
-                        mistake_type=sm.mistake_type,
-                        timestamp=sm.timestamp,
-                        duration=sm.duration,
-                        severity=sm.severity,
-                        confidence=sm.confidence,
-                        evidence_timestamps=sm.evidence_timestamps,
-                        cue=sm.cue,
-                        description=sm.description,
-                        metadata=sm.metadata
-                    ))
-                
-                # Store stroke-specific data
-                if strokes:
-                    stroke_data = {
-                        "strokes_detected": len(strokes),
-                        "strokes": [
-                            {
-                                "stroke_id": s.stroke_id,
-                                "start_timestamp": round(s.start_timestamp, 2),
-                                "contact_timestamp": round(s.contact_proxy_timestamp, 2),
-                                "end_timestamp": round(s.end_timestamp, 2),
-                                "duration": round(s.duration, 2),
-                                "overhead_confidence": round(s.overhead_confidence, 2),
-                                "dominant_side": s.dominant_side
-                            }
-                            for s in strokes
-                        ],
-                        "analyses": [
-                            {
-                                "stroke_id": a.stroke.stroke_id,
-                                "is_valid_overhead": a.is_valid_overhead,
-                                "contact_height_status": a.contact_height_status,
-                                "wrist_above_shoulder": a.wrist_above_shoulder,
-                                "contact_in_front": a.contact_in_front,
-                                "elbow_leads_wrist": a.elbow_leads_wrist,
-                                "ready_position_good": a.ready_position_good
-                            }
-                            for a in analyses
-                        ]
-                    }
-                
-                result.complete_stage("stroke_analysis")
-            
-            # Stage 6: Generate report
-            report_dict, evidence_chunks = self._generate_report_safe(
-                session_id=session_id,
-                video_metadata=pose_data.get("video_metadata", {}),
-                processing_stats=pose_data.get("processing_stats", {}),
-                features=features,
-                events=events,
-                mistakes=all_mistakes,
+            return self._run_analysis_from_pose_data(
+                pose_data=pose_data,
                 drill_type=drill_type,
-                stroke_data=stroke_data,
+                session_id=session_id,
+                result=result,
+                start_time=start_time,
+                session_dir=session_dir,
                 progress_callback=progress_callback
             )
-            result.complete_stage("report_generation")
-            
-            # Save outputs
-            report_path = session_dir / "report.json"
-            with open(report_path, 'w') as f:
-                json.dump(report_dict, f, indent=2)
-            
-            chunks_path = session_dir / "evidence_chunks.json"
-            with open(chunks_path, 'w') as f:
-                json.dump(evidence_chunks, f, indent=2)
-            
-            # Mark success
-            result.success = True
-            result.processing_time_sec = time.time() - start_time
-            result.data = {
-                "report": report_dict,
-                "evidence_chunks": evidence_chunks,
-                "output_dir": str(session_dir)
-            }
-            
-            logger.info(
-                f"Analysis complete for {session_id}: "
-                f"{len(events)} events, {len(all_mistakes)} mistakes "
-                f"in {result.processing_time_sec:.1f}s"
-            )
-            
-            if stroke_data:
-                logger.info(f"  Strokes detected: {stroke_data['strokes_detected']}")
-            
-            return result.to_dict()
             
         except ShuttleSenseException:
             # Re-raise our custom exceptions
@@ -491,6 +592,55 @@ class AnalysisPipeline:
             # Wrap unexpected exceptions
             logger.error(f"Unexpected error in analysis: {e}", exc_info=True)
             raise VideoProcessingError(f"Analysis failed unexpectedly: {str(e)}")
+
+    def analyze_from_pose_data(
+        self,
+        pose_data: Dict,
+        drill_type: str = "unknown",
+        session_id: Optional[str] = None,
+        save_poses: bool = False,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict:
+        """
+        Run analysis from precomputed pose data (no video processing).
+
+        Args:
+            pose_data: Pose data dict with frames + metadata
+            drill_type: Optional drill type (auto-detect if unknown)
+            session_id: Optional session ID
+            save_poses: Whether to save pose data to session folder
+            progress_callback: Optional callback(stage, progress)
+        """
+        start_time = time.time()
+        session_id = session_id or str(uuid.uuid4())[:8]
+        result = AnalysisResult(session_id)
+
+        session_dir = self.output_dir / session_id
+        session_dir.mkdir(exist_ok=True)
+
+        logger.info(f"Starting analysis for session {session_id} from pose data, drill: {drill_type}")
+
+        try:
+            if save_poses:
+                poses_path = session_dir / "poses.json"
+                save_poses_to_json(pose_data, str(poses_path))
+
+            result.complete_stage("pose_data_loaded")
+
+            return self._run_analysis_from_pose_data(
+                pose_data=pose_data,
+                drill_type=drill_type,
+                session_id=session_id,
+                result=result,
+                start_time=start_time,
+                session_dir=session_dir,
+                progress_callback=progress_callback
+            )
+        except ShuttleSenseException:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in pose-data analysis: {e}", exc_info=True)
+            raise VideoProcessingError(f"Pose-data analysis failed unexpectedly: {str(e)}")
     
     def get_session(self, session_id: str) -> Optional[Dict]:
         """Load a previous session's data."""

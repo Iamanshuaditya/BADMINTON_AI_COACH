@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 # Internal imports
 from config.settings import get_settings, Settings
 from core.pipeline import AnalysisPipeline
-from core.grounded_chat import GroundedChat, StubChat
+from core.grounded_chat import GroundedChat
 from exceptions import (
     ShuttleSenseException,
     SessionNotFound,
@@ -106,8 +106,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # Initialize pipeline
 pipeline = AnalysisPipeline(output_dir=settings.SESSIONS_DIR)
 
-# Initialize chat engine
-chat_engine = GroundedChat(settings.GOOGLE_API_KEY) if settings.GOOGLE_API_KEY else StubChat()
+# Initialize chat engine (evidence-only fallback if no API key)
+chat_engine = GroundedChat(settings.GOOGLE_API_KEY, data_dir=settings.SESSIONS_DIR)
 
 # =============================================================================
 # Request/Response Models
@@ -120,12 +120,34 @@ class AnalyzeRequest(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Session ID to query")
     question: str = Field(..., min_length=1, max_length=500, description="Question to ask")
+    include_debug: bool = Field(default=False, description="Include debug info in response")
+
+
+class Citation(BaseModel):
+    timestamp: float
+    type: str = "evidence_reference"
+
+
+class MissingEvidence(BaseModel):
+    reason: str
+    max_similarity: float
+    threshold: float
+    suggested_questions: list = []
+
+
+class ChatDebug(BaseModel):
+    top_similarity: float
+    selected_chunk_types: list = []
+    retrieval_count: int = 0
+    model_used: str = ""
 
 
 class ChatResponse(BaseModel):
     answer: str
-    citations: list
+    citations: list[Citation] = []
     grounded: bool
+    debug: Optional[ChatDebug] = None
+    missing_evidence: Optional[MissingEvidence] = None
 
 
 class HealthResponse(BaseModel):
@@ -493,6 +515,7 @@ async def chat(
     
     - **session_id**: Session to query
     - **question**: Question to ask the AI coach
+    - **include_debug**: Include debug info in response (similarity scores, etc.)
     """
     session = pipeline.get_session(chat_request.session_id)
     if not session:
@@ -509,13 +532,43 @@ async def chat(
         result = chat_engine.chat(
             question=chat_request.question,
             evidence_chunks=chunks,
-            session_summary=session.get("report", {}).get("metrics_summary")
+            session_id=chat_request.session_id,
+            session_summary=session.get("report", {}).get("metrics_summary"),
+            include_debug=chat_request.include_debug
         )
+        
+        # Build response with proper models
+        citations = [
+            Citation(timestamp=c.get("timestamp", 0), type=c.get("type", "evidence"))
+            for c in result.get("citations", [])
+        ]
+        
+        debug = None
+        if result.get("debug"):
+            d = result["debug"]
+            debug = ChatDebug(
+                top_similarity=d.get("top_similarity", 0),
+                selected_chunk_types=d.get("selected_chunk_types", []),
+                retrieval_count=d.get("retrieval_count", 0),
+                model_used=d.get("model_used", "")
+            )
+        
+        missing_evidence = None
+        if result.get("missing_evidence"):
+            me = result["missing_evidence"]
+            missing_evidence = MissingEvidence(
+                reason=me.get("reason", ""),
+                max_similarity=me.get("max_similarity", 0),
+                threshold=me.get("threshold", 0),
+                suggested_questions=me.get("suggested_questions", [])
+            )
         
         return ChatResponse(
             answer=result["answer"],
-            citations=result["citations"],
-            grounded=result["grounded"]
+            citations=citations,
+            grounded=result["grounded"],
+            debug=debug,
+            missing_evidence=missing_evidence
         )
     except Exception as e:
         logger.error(f"Chat failed: {e}")

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import './App.css'
 import TopBar from './components/TopBar'
 import ChatInterface from './components/ChatInterface'
@@ -194,7 +194,8 @@ function App() {
         role: 'assistant',
         content: result.answer,
         citations: result.citations,
-        grounded: result.grounded
+        grounded: result.grounded,
+        missing_evidence: result.missing_evidence
       }])
 
     } catch (err) {

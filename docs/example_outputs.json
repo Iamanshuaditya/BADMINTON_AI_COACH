@@ -1,0 +1,181 @@
+{
+    "example_1_report_with_auto_detection": {
+        "session_id": "abc12345",
+        "created_at": "2026-01-07T04:45:00Z",
+        "video_duration": 45.2,
+        "fps": 30.0,
+        "resolution": {
+            "width": 1920,
+            "height": 1080
+        },
+        "drill_type": "footwork",
+        "drill_type_source": "auto",
+        "drill_type_confidence": 0.72,
+        "processing_time_sec": 12.5,
+        "frames_analyzed": 1356,
+        "frames_with_pose": 1298,
+        "model_version": "mediapipe-0.10.9",
+        "events": [
+            {
+                "type": "split_step",
+                "timestamp": 5.3,
+                "end_timestamp": 5.6,
+                "duration": 0.3,
+                "confidence": 0.92
+            },
+            {
+                "type": "lunge",
+                "timestamp": 8.1,
+                "end_timestamp": 8.8,
+                "duration": 0.7,
+                "confidence": 0.88
+            },
+            {
+                "type": "direction_change",
+                "timestamp": 12.5,
+                "end_timestamp": 12.7,
+                "duration": 0.2,
+                "confidence": 0.85
+            }
+        ],
+        "mistakes": [
+            {
+                "type": "knee_collapse",
+                "timestamp": 12.1,
+                "duration": 0.5,
+                "severity": 0.78,
+                "confidence": 0.91,
+                "cue": "Knee out",
+                "description": "Knee collapsing inward (12.3°)",
+                "evidence": [
+                    12.0,
+                    12.3,
+                    12.5
+                ]
+            },
+            {
+                "type": "narrow_stance",
+                "timestamp": 18.5,
+                "duration": 0.8,
+                "severity": 0.65,
+                "confidence": 0.84,
+                "cue": "Wider base",
+                "description": "Stance too narrow (0.52)",
+                "evidence": [
+                    18.2,
+                    18.6,
+                    19.0
+                ]
+            }
+        ],
+        "top_mistakes": [
+            {
+                "type": "knee_collapse",
+                "count": 3,
+                "max_severity": 0.78,
+                "avg_confidence": 0.89,
+                "cue": "Knee out",
+                "timestamps": [
+                    12.1,
+                    22.4,
+                    35.8
+                ]
+            }
+        ],
+        "fix_first_plan": {
+            "primary_issue": "knee_collapse",
+            "occurrences": 3,
+            "cue": "Knee out",
+            "focus_drill": "Single-leg squats - knee over toes",
+            "key_timestamps": [
+                12.1,
+                22.4,
+                35.8
+            ]
+        },
+        "metrics_summary": {
+            "avg_stance_width_ratio": 0.92,
+            "avg_pose_confidence": 0.87,
+            "total_events": 8,
+            "total_mistakes": 5,
+            "split_steps_detected": 3,
+            "lunges_detected": 4,
+            "direction_changes": 6
+        },
+        "confidence_notes": [
+            "Low visibility in 58 frames (4%)"
+        ],
+        "stroke_analysis": null
+    },
+    "example_2_grounded_chat_response": {
+        "question": "What knee issues did you find in my session?",
+        "response": {
+            "answer": "I found 3 instances of knee collapse during your session. The most significant one occurred at [12.1s] during a lunge, where your knee deviated 12.3° inward. This pattern repeated at [22.4s] and [35.8s].\n\n**Focus on this first:** Your priority fix is to strengthen the 'knee out' cue.\n\n**30-second micro-drill:** Single-leg wall squats. Stand with your back against a wall, lift one foot, and slowly lower into a quarter squat while watching your knee track over your toes. Do 8 reps per leg, focusing on keeping that knee pushed outward.",
+            "grounded": true,
+            "citations": [
+                {
+                    "timestamp": 12.1,
+                    "type": "knee_collapse"
+                },
+                {
+                    "timestamp": 22.4,
+                    "type": "knee_collapse"
+                },
+                {
+                    "timestamp": 35.8,
+                    "type": "knee_collapse"
+                }
+            ],
+            "debug": {
+                "top_similarity": 0.82,
+                "selected_chunk_types": [
+                    "mistake",
+                    "priority",
+                    "summary"
+                ],
+                "retrieval_count": 4,
+                "model_used": "anthropic"
+            }
+        }
+    },
+    "example_3_ungrounded_response": {
+        "question": "Should I use a different racket string tension?",
+        "response": {
+            "answer": "I don't have enough evidence from this session to answer that question. The available data doesn't closely match what you're asking about. Try asking about specific mistakes or events detected in the video.",
+            "grounded": false,
+            "citations": [],
+            "missing_evidence": {
+                "reason": "Similarity below threshold",
+                "max_similarity": 0.18,
+                "threshold": 0.35,
+                "suggested_questions": [
+                    "What mistakes did you detect in this session?",
+                    "How was my split step timing?",
+                    "What should I focus on first?"
+                ]
+            }
+        }
+    },
+    "example_4_drill_autodetection_debug": {
+        "detected_drill_type": "footwork",
+        "confidence": 0.72,
+        "debug_features": {
+            "scores": {
+                "overhead-shadow": 0.15,
+                "footwork": 0.72,
+                "6-corner-shadow": 0.45
+            },
+            "features": {
+                "wrist_above_shoulder_fraction": 0.08,
+                "hip_lateral_range": 0.142,
+                "direction_changes": 8,
+                "arms_below_shoulder_fraction": 0.85,
+                "wrist_velocity_spikes": 2,
+                "max_wrist_height_relative": 0.035,
+                "avg_pose_confidence": 0.87,
+                "valid_frames": 1298
+            }
+        },
+        "reason": "Strong lateral movement (range=0.142, 8 direction changes)"
+    }
+}

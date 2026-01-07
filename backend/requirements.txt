@@ -15,6 +15,7 @@ scipy==1.12.0
 # AI/LLM
 google-generativeai==0.3.2
 anthropic==0.18.1
+sentence-transformers==2.2.2
 
 # Security & Auth
 python-jose[cryptography]==3.3.0

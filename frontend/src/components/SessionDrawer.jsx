@@ -17,6 +17,11 @@ export default function SessionDrawer({ report, onAsk }) {
     const events = report.events || [];
     const mistakes = report.top_mistakes || [];
     const fixFirst = report.fix_first_plan;
+    const drillType = report.drill_type || 'unknown';
+    const drillSource = report.drill_type_source || 'user';
+    const drillConfidence = typeof report.drill_type_confidence === 'number'
+        ? report.drill_type_confidence.toFixed(2)
+        : '1.00';
 
     return (
         <div className="drawer">
@@ -45,6 +50,7 @@ export default function SessionDrawer({ report, onAsk }) {
                         <div className="text-summary">
                             <p className="summary-line">{events.length} movement events analyzed</p>
                             <p className="summary-line">{mistakes.reduce((acc, m) => acc + m.count, 0)} form breakdowns detected</p>
+                            <p className="summary-line">Drill: {drillType} ({drillSource}, {drillConfidence})</p>
                         </div>
 
                         {fixFirst && (

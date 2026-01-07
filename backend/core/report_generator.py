@@ -27,6 +27,8 @@ class CoachReport:
     
     # Drill info
     drill_type: str
+    drill_type_source: str  # "user", "auto", "default"
+    drill_type_confidence: float  # 0.0 - 1.0, 1.0 for user-specified
     
     # Processing stats
     processing_time_sec: float
@@ -62,7 +64,10 @@ def generate_report(
     events: List[DetectedEvent],
     mistakes: List[DetectedMistake],
     drill_type: str = "unknown",
-    stroke_data: Optional[Dict] = None
+    drill_type_source: str = "user",
+    drill_type_confidence: float = 1.0,
+    stroke_data: Optional[Dict] = None,
+    confidence_notes_extra: Optional[List[str]] = None
 ) -> CoachReport:
     """Generate a coach report from analysis results."""
     
@@ -106,6 +111,9 @@ def generate_report(
         conf_notes.append(f"Low visibility in {low_conf_frames} frames ({low_conf_frames/len(features)*100:.0f}%)")
     if avg_confidence < 0.6:
         conf_notes.append("Overall pose confidence is low - consider better camera angle")
+    if confidence_notes_extra:
+        conf_notes.extend(confidence_notes_extra)
+        conf_notes = list(dict.fromkeys(conf_notes))
     
     # Build metrics summary
     metrics = {
@@ -131,6 +139,8 @@ def generate_report(
         resolution={"width": video_metadata.get("width", 0), 
                     "height": video_metadata.get("height", 0)},
         drill_type=drill_type,
+        drill_type_source=drill_type_source,
+        drill_type_confidence=drill_type_confidence,
         processing_time_sec=processing_stats.get("processing_time_sec", 0),
         frames_analyzed=processing_stats.get("frames_processed", 0),
         frames_with_pose=processing_stats.get("frames_with_pose", 0),

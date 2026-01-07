@@ -121,6 +121,57 @@ class SmoothingConfig:
 
 
 @dataclass
+class EmbeddingsConfig:
+    """Embeddings and semantic search configuration"""
+    # Similarity threshold - below this, answer is "not grounded"
+    similarity_threshold: float = 0.35
+    # Top-k chunks to retrieve
+    top_k: int = 5
+    # Minimum similarity to include in response
+    min_include_similarity: float = 0.25
+    # Model name for sentence-transformers
+    model_name: str = "all-MiniLM-L6-v2"
+    # Cache embeddings to disk
+    cache_embeddings: bool = True
+
+
+@dataclass
+class DrillClassifierConfig:
+    """Drill type auto-detection configuration"""
+    # Minimum confidence to accept auto-detection
+    confidence_threshold: float = 0.55
+    # Minimum frames required for classification
+    min_frames: int = 30
+    # Minimum pose confidence to include frame
+    min_pose_confidence: float = 0.7
+    # Overhead signature: minimum fraction of frames with wrist above shoulder
+    overhead_wrist_above_shoulder_fraction: float = 0.3
+    # Footwork signature: minimum hip lateral movement (normalized)
+    footwork_hip_lateral_threshold: float = 0.05
+    # Default drill type when detection fails
+    default_drill_type: str = "footwork"
+
+
+@dataclass
+class ChatGroundingConfig:
+    """Chat grounding and response configuration"""
+    # Maximum chunks to include in evidence
+    max_evidence_chunks: int = 5
+    # Minimum relevant chunks required for grounded response
+    min_evidence_chunks: int = 2
+    # Require timestamp citations in response
+    require_citations: bool = True
+    # Enable debug info in response
+    include_debug: bool = False
+    # Suggested questions when grounded=false
+    suggested_questions: tuple = (
+        "What mistakes did you detect in this session?",
+        "How was my split step timing?",
+        "What should I focus on first?",
+    )
+
+
+@dataclass
 class StrokeConfig:
     """Overhead stroke detection thresholds (for shadow practice)"""
     
@@ -194,6 +245,9 @@ class ThresholdConfig:
     visibility: VisibilityConfig = field(default_factory=VisibilityConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
     stroke: StrokeConfig = field(default_factory=StrokeConfig)
+    embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
+    drill_classifier: DrillClassifierConfig = field(default_factory=DrillClassifierConfig)
+    chat_grounding: ChatGroundingConfig = field(default_factory=ChatGroundingConfig)
 
 
 # Global config instance - modify this to tune thresholds
@@ -204,3 +258,8 @@ def get_thresholds() -> ThresholdConfig:
     """Get the current threshold configuration"""
     return THRESHOLDS
 
+
+# Commonly referenced thresholds (aliases)
+SIMILARITY_THRESHOLD = THRESHOLDS.embeddings.similarity_threshold
+DRILL_CLASSIFIER_CONFIDENCE_THRESHOLD = THRESHOLDS.drill_classifier.confidence_threshold
+MIN_POSE_FRAMES_FOR_CLASSIFICATION = THRESHOLDS.drill_classifier.min_frames
