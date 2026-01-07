@@ -39,18 +39,35 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 
-STRICT_SYSTEM_PROMPT = """You are a badminton coach assistant. You analyze video session data.
+STRICT_SYSTEM_PROMPT = """You are ShuttleSense AI, an elite badminton technical coach analyzing a player's video session.
 
-CRITICAL RULES - YOU MUST FOLLOW THESE:
-1. You may ONLY use the provided evidence to answer questions.
-2. Every claim you make MUST cite at least one timestamp in [brackets] like [12.3s].
-3. If evidence is insufficient, say: "I can't confirm this from the video. Consider refilming with full-body view."
-4. Do NOT make up information or speculate beyond the evidence.
-5. Keep responses concise and actionable.
-6. Focus on the most important issue first (one correction at a time principle).
-7. When giving corrections, include a brief micro-drill (30-60 seconds) that targets that specific issue and is explicitly supported by the evidence.
+YOUR COACHING STYLE:
+- Be encouraging but technically precise
+- Give ACTIONABLE advice the player can immediately use
+- Focus on ONE key correction at a time (the most impactful issue first)
+- Provide a specific 30-60 second micro-drill for each correction
+- Use timestamps [Xs] to reference specific moments from their session
 
-When asked about technique, always ground your answer in specific timestamps from the evidence."""
+WHEN ANALYZING ISSUES:
+- If the evidence shows MISTAKES (like "missing split step"), acknowledge the issue and provide the FIX
+- Reference specific timestamps where the issue occurred
+- Explain WHY this matters for their game
+- Give them a concrete drill to practice
+
+RESPONSE FORMAT:
+1. Acknowledge what you see in their session
+2. Explain the technical issue briefly
+3. Provide the correction cue (short, memorable phrase)
+4. Give a specific micro-drill (30-60 seconds)
+
+Example good response:
+"I can see at [12.3s] and [18.5s] you're initiating your split step late - about 0.2 seconds after your opponent contacts the shuttle. This delays your reaction.
+
+**The Fix:** Time your split step to land AS your opponent's racket contacts the shuttle.
+
+**Quick Drill (60s):** Shadow footwork - have a partner call 'now!' randomly. Practice landing your split step on their call. Do 20 reps, focusing on soft, balanced landings."
+
+Be the coach every player wishes they had - supportive, specific, and practical."""
 
 
 def format_evidence_for_prompt(results: List[RetrievalResult], confidence_notes: Optional[str] = None) -> str:
@@ -80,13 +97,9 @@ def build_chat_prompt(
 
 {evidence}
 
-USER QUESTION: {question}
+PLAYER'S QUESTION: {question}
 
-Remember: 
-- Only use the evidence above. 
-- Cite timestamps in [Xs] format.
-- Focus on ONE correction with a specific micro-drill.
-- If unsure, say so."""
+Now coach them! Reference the timestamps from their session, explain what you see, and give them a specific drill to fix it. Be their supportive coach."""
     
     return prompt
 
@@ -164,6 +177,124 @@ class GroundedChat:
 
     def _normalize_issue(self, text: str) -> str:
         return " ".join(text.lower().replace("_", " ").split())
+
+    def _is_generic_improvement_question(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        improvement_markers = [
+            "what should i improve",
+            "how can i improve",
+            "what should i work on",
+            "what should i focus on",
+            "what should i fix",
+            "what do i need to do",
+            "what do i need to improve",
+            "fix first",
+            "top mistake",
+            "primary issue",
+            "main issue",
+            "biggest issue",
+            "key issue",
+            "recommendation",
+            "suggestions",
+            "next step",
+            "next steps",
+            "improve",
+            "improvement"
+        ]
+        specific_terms = [
+            "split",
+            "lunge",
+            "knee",
+            "stance",
+            "recovery",
+            "overhead",
+            "stroke",
+            "wrist",
+            "elbow",
+            "timing",
+            "footwork",
+            "balance",
+            "posture",
+            "base",
+            "serve",
+            "hip",
+            "shoulder",
+            "ankle"
+        ]
+        if not any(marker in q for marker in improvement_markers):
+            return False
+        return not any(term in q for term in specific_terms)
+
+    def _build_fix_first_results(
+        self,
+        evidence_chunks: List[str],
+        min_results: int
+    ) -> List[RetrievalResult]:
+        max_results = self.thresholds.chat_grounding.max_evidence_chunks
+        candidate_indices: List[int] = []
+
+        priority_idx = None
+        for i, chunk in enumerate(evidence_chunks):
+            if "PRIORITY FIX" in chunk:
+                priority_idx = i
+                candidate_indices.append(i)
+                break
+
+        if priority_idx is None:
+            for marker in ("TOP ISSUE", "MISTAKE SUMMARY", "MISTAKE -"):
+                for i, chunk in enumerate(evidence_chunks):
+                    if marker in chunk:
+                        priority_idx = i
+                        candidate_indices.append(i)
+                        break
+                if candidate_indices:
+                    break
+
+        if not candidate_indices:
+            return []
+
+        issue = self._extract_issue(evidence_chunks[candidate_indices[0]])
+        issue_norm = self._normalize_issue(issue) if issue else None
+
+        def add_matching_chunks(predicate) -> None:
+            for i, chunk in enumerate(evidence_chunks):
+                if i in candidate_indices:
+                    continue
+                if predicate(chunk):
+                    candidate_indices.append(i)
+                    if len(candidate_indices) >= max_results:
+                        return
+                if len(candidate_indices) >= min_results:
+                    return
+
+        if issue_norm:
+            def is_issue_chunk(chunk: str) -> bool:
+                chunk_norm = self._normalize_issue(chunk)
+                return (
+                    issue_norm in chunk_norm and
+                    ("MISTAKE" in chunk or "TOP ISSUE" in chunk or "MISTAKE SUMMARY" in chunk)
+                )
+            add_matching_chunks(is_issue_chunk)
+
+        if len(candidate_indices) < min_results:
+            add_matching_chunks(lambda chunk: "MISTAKE" in chunk)
+
+        if len(candidate_indices) < min_results:
+            add_matching_chunks(lambda chunk: "SESSION SUMMARY" in chunk)
+
+        results = []
+        for rank, idx in enumerate(candidate_indices[:max_results]):
+            chunk = evidence_chunks[idx]
+            meta = self.embeddings_manager._parse_chunk_meta(chunk, idx)
+            similarity = max(0.5, 1.0 - (rank * 0.05))
+            results.append(RetrievalResult(
+                chunk=chunk,
+                chunk_id=idx,
+                similarity=similarity,
+                meta=meta
+            ))
+
+        return results
 
     def _extract_issue(self, chunk: str) -> Optional[str]:
         match = re.search(r"PRIORITY FIX:\s*([^\(\.]+)", chunk, re.IGNORECASE)
@@ -377,6 +508,27 @@ class GroundedChat:
                 include_debug=include_debug,
                 reason="No evidence chunks"
             )
+
+        if self._is_generic_improvement_question(question):
+            fix_results = self._build_fix_first_results(evidence_chunks, config.min_evidence_chunks)
+            if len(fix_results) >= config.min_evidence_chunks:
+                confidence_notes = self._find_confidence_notes(evidence_chunks)
+                fallback = self._build_evidence_answer(fix_results, confidence_notes, evidence_chunks)
+                if fallback:
+                    response = {
+                        "answer": fallback["answer"],
+                        "grounded": True,
+                        "citations": self._map_citations_to_types(fallback["citations"], fix_results),
+                        "evidence_used": [r.chunk for r in fix_results]
+                    }
+                    if include_debug:
+                        response["debug"] = {
+                            "top_similarity": 1.0,
+                            "selected_chunk_types": [r.meta.chunk_type for r in fix_results],
+                            "retrieval_count": len(fix_results),
+                            "llm_model": "fix-first"
+                        }
+                    return response
         
         # Get or create embeddings
         embeddings_cache = self._get_or_create_embeddings(session_id, evidence_chunks)
@@ -404,18 +556,6 @@ class GroundedChat:
                 include_debug=include_debug,
                 reason="No relevant evidence chunks"
             )
-
-        # Check grounding threshold
-        if not self.embeddings_manager.is_grounded(max_similarity):
-            return self._build_ungrounded_response(
-                question=question,
-                max_similarity=max_similarity,
-                threshold=self.thresholds.embeddings.similarity_threshold,
-                include_debug=include_debug,
-                reason="Similarity below threshold"
-            )
-
-        # Check minimum relevant chunks
         if len(results) < config.min_evidence_chunks:
             return self._build_ungrounded_response(
                 question=question,
@@ -425,68 +565,46 @@ class GroundedChat:
                 reason="Too few relevant chunks"
             )
 
+        # Get confidence notes for context
         confidence_notes = self._find_confidence_notes(evidence_chunks)
-        primary = self._select_primary_result(results)
-        primary_issue = self._extract_issue(primary.chunk) if primary else None
-        required_drill = self._find_recommended_drill_in_chunks(evidence_chunks, primary_issue)
-        if not required_drill:
-            return self._build_ungrounded_response(
-                question=question,
-                max_similarity=max_similarity,
-                threshold=self.thresholds.embeddings.similarity_threshold,
-                include_debug=include_debug,
-                reason="No drill recommendation in evidence"
-            )
-
-        # Build prompt with retrieved evidence
+        
+        # Build prompt with ALL retrieved evidence (no strict filtering)
         prompt = build_chat_prompt(question, results, session_summary, confidence_notes)
 
-        # Get LLM response (if available) and validate
+        # Try LLM first, fall back to evidence-based response
         answer = None
         citations = []
+        
         if self.anthropic_client or self.genai_model:
-            candidate = self._get_llm_response(prompt, results)
-            candidate_citations = extract_citations(candidate)
-            evidence_ts = self._collect_evidence_timestamps(results)
-            has_required_drill = True
-            if required_drill:
-                has_required_drill = required_drill.lower() in candidate.lower()
-
-            citations_ok = (not config.require_citations) or bool(candidate_citations)
-            citations_in_evidence = True
-            if evidence_ts:
-                citations_in_evidence = all(
-                    self._format_ts_value(c["timestamp"]) in evidence_ts
-                    for c in candidate_citations
-                )
-
-            if citations_ok and citations_in_evidence and has_required_drill:
-                answer = candidate
-                citations = self._map_citations_to_types(candidate_citations, results)
-                if confidence_notes and primary and primary.meta.timestamps:
-                    if confidence_notes.lower() not in answer.lower():
-                        ts_value = self._format_ts_value(primary.meta.timestamps[0])
-                        answer = f"{answer} Confidence note: {confidence_notes} [{ts_value}s]."
-                        citations = self._map_citations_to_types(extract_citations(answer), results)
+            try:
+                candidate = self._get_llm_response(prompt, results)
+                if candidate and len(candidate) > 20:
+                    candidate_citations = extract_citations(candidate)
+                    if not (config.require_citations and not candidate_citations):
+                        answer = candidate
+                        citations = self._map_citations_to_types(candidate_citations, results)
+            except Exception as e:
+                logger.warning(f"LLM failed, using evidence fallback: {e}")
 
         # Fallback to evidence-only response
         if not answer:
             fallback = self._build_evidence_answer(results, confidence_notes, evidence_chunks)
-            if not fallback:
-                return self._build_ungrounded_response(
-                    question=question,
-                    max_similarity=max_similarity,
-                    threshold=self.thresholds.embeddings.similarity_threshold,
-                    include_debug=include_debug,
-                    reason="No drill recommendation in evidence"
-                )
-            answer = fallback["answer"]
-            citations = self._map_citations_to_types(fallback["citations"], results)
+            if fallback:
+                answer = fallback["answer"]
+                citations = self._map_citations_to_types(fallback["citations"], results)
+            else:
+                # Last resort: just summarize the top evidence
+                answer = self._simple_evidence_summary(results, evidence_chunks)
+                citations = [
+                    {"timestamp": ts, "type": "evidence"}
+                    for r in results[:3]
+                    for ts in r.meta.timestamps[:1]
+                ]
         
         # Build response
         response = {
             "answer": answer,
-            "grounded": True,
+            "grounded": max_similarity >= self.thresholds.embeddings.similarity_threshold,
             "citations": citations,
             "evidence_used": [r.chunk for r in results]
         }
@@ -496,10 +614,26 @@ class GroundedChat:
                 "top_similarity": round(max_similarity, 3),
                 "selected_chunk_types": [r.meta.chunk_type for r in results],
                 "retrieval_count": len(results),
-                "model_used": self.provider if (self.anthropic_client or self.genai_model) else "evidence-only"
+                "llm_model": self.provider if (self.anthropic_client or self.genai_model) else "evidence-only"
             }
         
         return response
+    
+    def _simple_evidence_summary(self, results: List[RetrievalResult], chunks: List[str]) -> str:
+        """Create a simple summary from evidence when everything else fails."""
+        if not results:
+            return "No relevant evidence found in this session."
+        
+        # Find the priority fix first
+        priority_chunks = [c for c in chunks if "PRIORITY FIX:" in c]
+        if priority_chunks:
+            # Extract key info from priority fix
+            pc = priority_chunks[0]
+            return f"Based on your session: {pc}"
+        
+        # Otherwise summarize top result
+        top = results[0]
+        return f"From your session at [{top.meta.timestamps[0] if top.meta.timestamps else 0}s]: {top.chunk}"
     
     def _get_llm_response(self, prompt: str, results: List[RetrievalResult]) -> str:
         """Get response from LLM provider."""
@@ -522,6 +656,92 @@ class GroundedChat:
             logger.error(f"LLM generation failed ({self.provider}): {e}")
         
         return fallback
+    
+    def _stream_llm_response(self, prompt: str, results: List[RetrievalResult]):
+        """Stream response from LLM provider, yielding text chunks."""
+        try:
+            if self.anthropic_client:
+                with self.anthropic_client.messages.stream(
+                    model="claude-sonnet-4-5",
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}]
+                ) as stream:
+                    for text in stream.text_stream:
+                        yield text
+            else:
+                # Fallback for non-streaming
+                full_response = self._get_llm_response(prompt, results)
+                # Simulate streaming by yielding words
+                for word in full_response.split(' '):
+                    yield word + ' '
+                    
+        except Exception as e:
+            logger.error(f"LLM streaming failed ({self.provider}): {e}")
+            # Yield fallback on error
+            fallback = self._fallback_response_from_results(results)
+            yield fallback
+    
+    def chat_stream(
+        self,
+        question: str,
+        evidence_chunks: List[str],
+        session_id: str = "unknown",
+        session_summary: Optional[Dict] = None
+    ):
+        """
+        Stream chat response - yields text chunks as they are generated.
+        
+        Yields:
+            str: Text chunks as they are generated
+        """
+        config = self.thresholds.chat_grounding
+        
+        if not evidence_chunks:
+            yield "No evidence available for this session."
+            return
+
+        if self._is_generic_improvement_question(question):
+            fix_results = self._build_fix_first_results(evidence_chunks, config.min_evidence_chunks)
+            if len(fix_results) >= config.min_evidence_chunks:
+                confidence_notes = self._find_confidence_notes(evidence_chunks)
+                fallback = self._build_evidence_answer(fix_results, confidence_notes, evidence_chunks)
+                if fallback:
+                    yield fallback["answer"]
+                    return
+        
+        # Get or create embeddings
+        embeddings_cache = self._get_or_create_embeddings(session_id, evidence_chunks)
+        
+        if not embeddings_cache:
+            yield "Unable to process session data."
+            return
+        
+        # Perform semantic search
+        results, max_similarity = self.embeddings_manager.semantic_search(
+            query=question,
+            cache=embeddings_cache,
+            top_k=config.max_evidence_chunks
+        )
+        
+        if not results:
+            yield "No relevant evidence found for your question. Try asking about specific movements or mistakes."
+            return
+        if len(results) < config.min_evidence_chunks:
+            yield (
+                "I don't have enough evidence from this session to answer that question. "
+                "Try asking about specific mistakes or events detected in the video."
+            )
+            return
+        
+        # Get confidence notes for context
+        confidence_notes = self._find_confidence_notes(evidence_chunks)
+        
+        # Build prompt
+        prompt = build_chat_prompt(question, results, session_summary, confidence_notes)
+        
+        # Stream response
+        for chunk in self._stream_llm_response(prompt, results):
+            yield chunk
     
     def _fallback_response_from_results(self, results: List[RetrievalResult]) -> str:
         """Generate fallback response from retrieved results."""

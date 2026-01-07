@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Internal imports
@@ -139,7 +139,7 @@ class ChatDebug(BaseModel):
     top_similarity: float
     selected_chunk_types: list = []
     retrieval_count: int = 0
-    model_used: str = ""
+    llm_model: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -550,7 +550,7 @@ async def chat(
                 top_similarity=d.get("top_similarity", 0),
                 selected_chunk_types=d.get("selected_chunk_types", []),
                 retrieval_count=d.get("retrieval_count", 0),
-                model_used=d.get("model_used", "")
+                llm_model=d.get("llm_model", "")
             )
         
         missing_evidence = None
@@ -573,6 +573,61 @@ async def chat(
     except Exception as e:
         logger.error(f"Chat failed: {e}")
         raise VideoProcessingError(f"Chat failed: {str(e)}", stage="chat")
+
+
+# =============================================================================
+# Streaming Chat Endpoint
+# =============================================================================
+
+@app.post("/api/chat/stream", tags=["Chat"])
+@limiter.limit(settings.RATE_LIMIT_CHAT)
+async def chat_stream(
+    request: Request,
+    chat_request: ChatRequest
+):
+    """
+    Stream chat response - returns text as it's generated.
+    Uses Server-Sent Events (SSE) format.
+    """
+    session = pipeline.get_session(chat_request.session_id)
+    if not session:
+        raise SessionNotFound(chat_request.session_id)
+    
+    chunks = session.get("evidence_chunks", [])
+    if not chunks:
+        raise VideoProcessingError(
+            "No evidence available for this session",
+            stage="chat"
+        )
+    
+    def generate():
+        try:
+            for text_chunk in chat_engine.chat_stream(
+                question=chat_request.question,
+                evidence_chunks=chunks,
+                session_id=chat_request.session_id,
+                session_summary=session.get("report", {}).get("metrics_summary")
+            ):
+                # SSE format: data: <content>\n\n
+                yield f"data: {text_chunk}\n\n"
+            
+            # Signal end of stream
+            yield "data: [DONE]\n\n"
+            
+        except Exception as e:
+            logger.error(f"Stream chat failed: {e}")
+            yield f"data: Error: {str(e)}\n\n"
+            yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
 
 
 # =============================================================================

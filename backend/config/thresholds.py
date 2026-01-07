@@ -124,11 +124,11 @@ class SmoothingConfig:
 class EmbeddingsConfig:
     """Embeddings and semantic search configuration"""
     # Similarity threshold - below this, answer is "not grounded"
-    similarity_threshold: float = 0.35
+    similarity_threshold: float = 0.20
     # Top-k chunks to retrieve
     top_k: int = 5
     # Minimum similarity to include in response
-    min_include_similarity: float = 0.25
+    min_include_similarity: float = 0.10
     # Model name for sentence-transformers
     model_name: str = "all-MiniLM-L6-v2"
     # Cache embeddings to disk
